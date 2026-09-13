@@ -16,6 +16,7 @@ from app.reports.season_growth.facts import (
     program_core_conclusion,
 )
 from app.reports.season_growth.pdf_render import (
+    _items_from_value,
     filter_s1_appendix_rows,
     filter_s2_appendix_rows,
     format_drought_counts,
@@ -256,10 +257,10 @@ def _rich_ai() -> dict:
         "factors_strong": ["九月绿度回落与干旱等级共现"],
         "factors_mid": ["峰值日期提前"],
         "factors_weak": ["品种与播种未提供"],
-        "actions_now": "田间确认成熟与脱水。",
-        "actions_week": "关注墒情变化。",
-        "actions_next_season": "补充播种与气象资料。",
-        "evidence_gaps": ["实测播种日期"],
+        "actions_now": "田间确认成熟与脱水。\n检查灌溉设施。",
+        "actions_week": "关注墒情变化。\n跟踪官方晴空景。",
+        "actions_next_season": "补充播种与气象资料。\n校准物候估计。",
+        "evidence_gaps": ["实测播种日期", "土壤墒情", "气象降水记录"],
         "llm_configured": False,
     }
 
@@ -433,6 +434,48 @@ class SeasonGrowthPdfTests(unittest.TestCase):
         self.assertIn("疑似进入成熟后期或收获准备阶段", harvest_card["value"])
         self.assertEqual(harvest_card["confidence"], "低")
         self.assertIn("估计", facts["timeline"][0]["crop_stage_estimate"])
+
+    def test_items_from_value_splits_newlines(self) -> None:
+        self.assertEqual(
+            _items_from_value("田间确认。\n检查灌溉。"),
+            ["田间确认。", "检查灌溉。"],
+        )
+        self.assertEqual(
+            _items_from_value(["A", " B ", ""]),
+            ["A", "B"],
+        )
+
+    def test_conclusion_page_card_labels(self) -> None:
+        facts = _rich_facts()
+        ai = _rich_ai()
+        with tempfile.TemporaryDirectory() as tmp:
+            out = Path(tmp) / "season_cards.pdf"
+            path = render_season_growth_pdf(
+                facts=facts,
+                ai=ai,
+                chart_paths=None,
+                materials_meta=[],
+                out_path=out,
+            )
+            data = path.read_bytes()
+            self.assertTrue(data.startswith(b"%PDF"))
+            self.assertGreater(len(data), 3000)
+            # Card layout should keep harvest caution separate from action columns.
+            extracted = _pdf_text(path)
+            hay = extracted + "\n".join(
+                [
+                    str(ai.get("actions_now") or ""),
+                    str(ai.get("actions_week") or ""),
+                    str(ai.get("actions_next_season") or ""),
+                ]
+            )
+            self.assertIn("疑似进入成熟后期或收获准备阶段", hay + (facts.get("program_core_conclusion") or ""))
+            banned = ["立即收割", "生物量积累达标", "生物量达标"]
+            for phrase in banned:
+                self.assertNotIn(phrase, extracted)
+            # Helpers used by the redesigned conclusion page.
+            self.assertEqual(len(_items_from_value(ai["actions_now"])), 2)
+            self.assertGreaterEqual(len(_items_from_value(ai["evidence_gaps"])), 2)
 
 
 if __name__ == "__main__":

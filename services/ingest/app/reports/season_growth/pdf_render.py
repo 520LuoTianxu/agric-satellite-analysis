@@ -194,7 +194,7 @@ def _styles() -> dict[str, ParagraphStyle]:
             fontName="CNB",
             fontSize=8,
             leading=11,
-            alignment=TA_CENTER,
+            alignment=TA_LEFT,
             textColor=HexColor("#143d2b"),
         ),
         "caption": ParagraphStyle(
@@ -276,6 +276,46 @@ def _styles() -> dict[str, ParagraphStyle]:
             leading=14,
             alignment=TA_JUSTIFY,
             textColor=HexColor("#1b4332"),
+        ),
+        "pill_num": ParagraphStyle(
+            "sg_pill_num",
+            fontName="CNB",
+            fontSize=9,
+            leading=12,
+            alignment=TA_CENTER,
+            textColor=white,
+        ),
+        "card_h": ParagraphStyle(
+            "sg_card_h",
+            fontName="CNB",
+            fontSize=9,
+            leading=12,
+            alignment=TA_LEFT,
+            textColor=HexColor("#143d2b"),
+        ),
+        "card_bullet": ParagraphStyle(
+            "sg_card_bullet",
+            fontName="CN",
+            fontSize=8.2,
+            leading=11.5,
+            alignment=TA_LEFT,
+            textColor=HexColor("#222"),
+        ),
+        "caution": ParagraphStyle(
+            "sg_caution",
+            fontName="CN",
+            fontSize=8.5,
+            leading=12,
+            alignment=TA_LEFT,
+            textColor=HexColor("#7a4a00"),
+        ),
+        "chip": ParagraphStyle(
+            "sg_chip",
+            fontName="CN",
+            fontSize=7.8,
+            leading=11,
+            alignment=TA_LEFT,
+            textColor=HexColor("#333"),
         ),
         "footer": ParagraphStyle(
             "sg_footer",
@@ -464,8 +504,13 @@ def _table(
     numeric_cols: set[int] | None = None,
     zebra: bool = True,
 ) -> Table:
+    """Body/appendix tables: all text and numbers LEFT-aligned.
+
+    ``numeric_cols`` is retained for call-site compatibility but no longer
+    switches to right alignment.
+    """
     styles = _styles()
-    numeric_cols = numeric_cols or set()
+    _ = numeric_cols  # kept for API compatibility; alignment is always LEFT
     data: list[list[Any]] = []
     for i, row in enumerate(rows):
         cells = []
@@ -474,8 +519,6 @@ def _table(
                 cells.append(c)
             elif i == 0:
                 cells.append(Paragraph(_esc(c), styles["th"]))
-            elif j in numeric_cols:
-                cells.append(Paragraph(_esc(c), styles["small_r"]))
             else:
                 cells.append(Paragraph(_esc(c), styles["small"]))
         data.append(cells)
@@ -486,6 +529,7 @@ def _table(
         ("FONTSIZE", (0, 0), (-1, -1), 8),
         ("GRID", (0, 0), (-1, -1), 0.35, HexColor("#c5d5c8")),
         ("VALIGN", (0, 0), (-1, -1), "MIDDLE"),
+        ("ALIGN", (0, 0), (-1, -1), "LEFT"),
         ("LEFTPADDING", (0, 0), (-1, -1), 2.5),
         ("RIGHTPADDING", (0, 0), (-1, -1), 2.5),
         ("TOPPADDING", (0, 0), (-1, -1), 2),
@@ -653,6 +697,299 @@ def _highlight_box(title: str, body: str, styles: dict) -> Table:
                 ("RIGHTPADDING", (0, 0), (-1, -1), 6),
                 ("TOPPADDING", (0, 0), (-1, -1), 3),
                 ("BOTTOMPADDING", (0, 0), (-1, -1), 4),
+            ]
+        )
+    )
+    return t
+
+
+
+def _items_from_value(value: Any, *, max_items: int = 6) -> list[str]:
+    """Normalize str / list / None into short left-aligned bullet strings."""
+    if value is None:
+        return []
+    raw: list[str] = []
+    if isinstance(value, list):
+        for x in value:
+            s = str(x).strip()
+            if s:
+                raw.append(s)
+    else:
+        s = str(value).strip()
+        if not s:
+            return []
+        # Prefer explicit newlines (LLM list joined by _as_str_or_none).
+        if "\n" in s:
+            raw = [p.strip() for p in s.splitlines() if p.strip()]
+        else:
+            # Split long Chinese sentences into short bullets when possible.
+            parts = [p.strip() for p in s.replace("；", "。").split("。") if p.strip()]
+            raw = parts if len(parts) > 1 else [s]
+    cleaned: list[str] = []
+    for item in raw:
+        t = item.lstrip("•·-— ").strip()
+        if t:
+            cleaned.append(t)
+    return cleaned[:max_items]
+
+
+def _panel_card(
+    title: str,
+    bullets: list[str],
+    *,
+    header_bg: str,
+    body_bg: str,
+    border: str,
+    width: float,
+    styles: dict,
+    title_color: str | None = None,
+) -> Table:
+    title_style = ParagraphStyle(
+        f"sg_panel_title_{id(title)}_{int(width)}",
+        parent=styles["card_h"],
+        textColor=HexColor(title_color or "#143d2b"),
+    )
+    body_style = styles["card_bullet"]
+    rows: list[list[Any]] = [[Paragraph(_esc(title), title_style)]]
+    if bullets:
+        for b in bullets:
+            rows.append([Paragraph(f"• {_esc(b)}", body_style)])
+    else:
+        rows.append([Paragraph("—", body_style)])
+    t = Table(rows, colWidths=[width])
+    cmds: list[tuple] = [
+        ("BACKGROUND", (0, 0), (-1, 0), HexColor(header_bg)),
+        ("BACKGROUND", (0, 1), (-1, -1), HexColor(body_bg)),
+        ("BOX", (0, 0), (-1, -1), 0.45, HexColor(border)),
+        ("VALIGN", (0, 0), (-1, -1), "TOP"),
+        ("LEFTPADDING", (0, 0), (-1, -1), 4),
+        ("RIGHTPADDING", (0, 0), (-1, -1), 4),
+        ("TOPPADDING", (0, 0), (0, 0), 3),
+        ("BOTTOMPADDING", (0, 0), (0, 0), 3),
+        ("TOPPADDING", (0, 1), (-1, -1), 1.5),
+        ("BOTTOMPADDING", (0, 1), (-1, -1), 2),
+        ("ALIGN", (0, 0), (-1, -1), "LEFT"),
+    ]
+    t.setStyle(TableStyle(cmds))
+    return t
+
+
+def _conclusion_pills(items: list[str], styles: dict) -> KeepTogether:
+    """3–4 short conclusion cards with numbered pills."""
+    pills: list[Any] = []
+    accent = HexColor("#1b4332")
+    for i, item in enumerate(items[:4], start=1):
+        num = Paragraph(str(i), styles["pill_num"])
+        body = Paragraph(_esc(item), styles["card_bullet"])
+        num_cell = Table([[num]], colWidths=[7 * mm])
+        num_cell.setStyle(
+            TableStyle(
+                [
+                    ("BACKGROUND", (0, 0), (-1, -1), accent),
+                    ("ALIGN", (0, 0), (-1, -1), "CENTER"),
+                    ("VALIGN", (0, 0), (-1, -1), "MIDDLE"),
+                    ("TOPPADDING", (0, 0), (-1, -1), 2),
+                    ("BOTTOMPADDING", (0, 0), (-1, -1), 2),
+                    ("LEFTPADDING", (0, 0), (-1, -1), 1),
+                    ("RIGHTPADDING", (0, 0), (-1, -1), 1),
+                ]
+            )
+        )
+        row = Table([[num_cell, body]], colWidths=[9 * mm, _CONTENT_W - 9 * mm])
+        row.setStyle(
+            TableStyle(
+                [
+                    ("BACKGROUND", (0, 0), (-1, -1), HexColor("#f4f8f5")),
+                    ("BOX", (0, 0), (-1, -1), 0.4, HexColor("#9db8a4")),
+                    ("VALIGN", (0, 0), (-1, -1), "MIDDLE"),
+                    ("LEFTPADDING", (0, 0), (0, 0), 3),
+                    ("RIGHTPADDING", (0, 0), (0, 0), 2),
+                    ("LEFTPADDING", (1, 0), (1, 0), 4),
+                    ("RIGHTPADDING", (1, 0), (1, 0), 5),
+                    ("TOPPADDING", (0, 0), (-1, -1), 3),
+                    ("BOTTOMPADDING", (0, 0), (-1, -1), 3),
+                ]
+            )
+        )
+        pills.append(row)
+        pills.append(Spacer(1, 1.8 * mm))
+    return KeepTogether(pills)
+
+
+def _factor_cards_row(
+    strong: list[str], mid: list[str], weak: list[str], styles: dict
+) -> Table:
+    gap = 2.5 * mm
+    col_w = (_CONTENT_W - 2 * gap) / 3
+    cards = [
+        _panel_card(
+            "证据较强",
+            strong or ["程序未列出更强因果；以下仅作提示。"],
+            header_bg="#c8e6c9",
+            body_bg="#e8f5e9",
+            border="#81c784",
+            width=col_w,
+            styles=styles,
+            title_color="#1b5e20",
+        ),
+        _panel_card(
+            "证据中等",
+            mid or ["—"],
+            header_bg="#ffe082",
+            body_bg="#fff8e1",
+            border="#ffb300",
+            width=col_w,
+            styles=styles,
+            title_color="#e65100",
+        ),
+        _panel_card(
+            "证据不足",
+            weak
+            or [
+                "天气、播种、品种、土壤、产量、墒情均未由本系统观测，不能认定。"
+            ],
+            header_bg="#e0e0e0",
+            body_bg="#f5f5f5",
+            border="#9e9e9e",
+            width=col_w,
+            styles=styles,
+            title_color="#424242",
+        ),
+    ]
+    spaced = Table(
+        [[cards[0], "", cards[1], "", cards[2]]],
+        colWidths=[col_w, gap, col_w, gap, col_w],
+    )
+    spaced.setStyle(
+        TableStyle(
+            [
+                ("VALIGN", (0, 0), (-1, -1), "TOP"),
+                ("LEFTPADDING", (0, 0), (-1, -1), 0),
+                ("RIGHTPADDING", (0, 0), (-1, -1), 0),
+                ("TOPPADDING", (0, 0), (-1, -1), 0),
+                ("BOTTOMPADDING", (0, 0), (-1, -1), 0),
+            ]
+        )
+    )
+    return spaced
+
+
+def _action_cards_row(
+    now_items: list[str],
+    week_items: list[str],
+    next_items: list[str],
+    styles: dict,
+) -> Table:
+    gap = 2.5 * mm
+    col_w = (_CONTENT_W - 2 * gap) / 3
+    cards = [
+        _panel_card(
+            "现在",
+            now_items
+            or ["结合田间确认当前冠层与墒情，不宜仅凭遥感安排作业。"],
+            header_bg="#b2dfdb",
+            body_bg="#e0f2f1",
+            border="#4db6ac",
+            width=col_w,
+            styles=styles,
+            title_color="#00695c",
+        ),
+        _panel_card(
+            "未来7天",
+            week_items or ["未来7天继续关注官方晴空景与田间脱水情况。"],
+            header_bg="#bbdefb",
+            body_bg="#e3f2fd",
+            border="#64b5f6",
+            width=col_w,
+            styles=styles,
+            title_color="#1565c0",
+        ),
+        _panel_card(
+            "下一季",
+            next_items or ["下一季请补充播种日期、品种与气象资料，以便校准物候估计。"],
+            header_bg="#d1c4e9",
+            body_bg="#ede7f6",
+            border="#9575cd",
+            width=col_w,
+            styles=styles,
+            title_color="#4527a0",
+        ),
+    ]
+    spaced = Table(
+        [[cards[0], "", cards[1], "", cards[2]]],
+        colWidths=[col_w, gap, col_w, gap, col_w],
+    )
+    spaced.setStyle(
+        TableStyle(
+            [
+                ("VALIGN", (0, 0), (-1, -1), "TOP"),
+                ("LEFTPADDING", (0, 0), (-1, -1), 0),
+                ("RIGHTPADDING", (0, 0), (-1, -1), 0),
+                ("TOPPADDING", (0, 0), (-1, -1), 0),
+                ("BOTTOMPADDING", (0, 0), (-1, -1), 0),
+            ]
+        )
+    )
+    return spaced
+
+
+def _caution_banner(text: str, styles: dict) -> Table:
+    data = [[Paragraph(f"⚠ {_esc(text)}", styles["caution"])]]
+    t = Table(data, colWidths=[_CONTENT_W])
+    t.setStyle(
+        TableStyle(
+            [
+                ("BACKGROUND", (0, 0), (-1, -1), HexColor("#fff3e0")),
+                ("BOX", (0, 0), (-1, -1), 0.6, HexColor("#ef6c00")),
+                ("LEFTPADDING", (0, 0), (-1, -1), 6),
+                ("RIGHTPADDING", (0, 0), (-1, -1), 6),
+                ("TOPPADDING", (0, 0), (-1, -1), 4),
+                ("BOTTOMPADDING", (0, 0), (-1, -1), 4),
+                ("VALIGN", (0, 0), (-1, -1), "MIDDLE"),
+            ]
+        )
+    )
+    return t
+
+
+def _gap_chips(items: list[str], styles: dict) -> Table:
+    """Compact 2-column bullet list for evidence gaps."""
+    if not items:
+        items = ["—"]
+    cells: list[Any] = []
+    for it in items:
+        chip = Table(
+            [[Paragraph(f"• {_esc(it)}", styles["chip"])]],
+            colWidths=[86 * mm],
+        )
+        chip.setStyle(
+            TableStyle(
+                [
+                    ("BACKGROUND", (0, 0), (-1, -1), HexColor("#eceff1")),
+                    ("BOX", (0, 0), (-1, -1), 0.3, HexColor("#b0bec5")),
+                    ("LEFTPADDING", (0, 0), (-1, -1), 4),
+                    ("RIGHTPADDING", (0, 0), (-1, -1), 4),
+                    ("TOPPADDING", (0, 0), (-1, -1), 2.5),
+                    ("BOTTOMPADDING", (0, 0), (-1, -1), 2.5),
+                    ("VALIGN", (0, 0), (-1, -1), "TOP"),
+                ]
+            )
+        )
+        cells.append(chip)
+    if len(cells) % 2 == 1:
+        cells.append("")
+    grid: list[list[Any]] = []
+    for i in range(0, len(cells), 2):
+        grid.append([cells[i], cells[i + 1]])
+    t = Table(grid, colWidths=[89 * mm, 89 * mm])
+    t.setStyle(
+        TableStyle(
+            [
+                ("VALIGN", (0, 0), (-1, -1), "TOP"),
+                ("LEFTPADDING", (0, 0), (-1, -1), 1),
+                ("RIGHTPADDING", (0, 0), (-1, -1), 1),
+                ("TOPPADDING", (0, 0), (-1, -1), 1),
+                ("BOTTOMPADDING", (0, 0), (-1, -1), 1),
             ]
         )
     )
@@ -1000,60 +1337,63 @@ def render_season_growth_pdf(
         )
     story.append(PageBreak())
 
-    # ── P5 analysis + actions ──
+    # ── P5 analysis + actions (card layout) ──
     story.append(Paragraph("四、综合结论与建议", styles["h1"]))
-    story.append(Paragraph("综合结论", styles["h2"]))
+    story.append(Paragraph("【综合结论】", styles["h2"]))
     conclusions = list(ai.get("conclusions") or []) or program_conclusions
-    if conclusions:
-        _bullets(story, conclusions[:4], styles)
+    conclusion_items = _items_from_value(conclusions, max_items=4)
+    if conclusion_items:
+        story.append(_conclusion_pills(conclusion_items, styles))
     else:
         story.append(Paragraph("（无综合结论）", styles["body"]))
 
-    story.append(Paragraph("可能影响因素", styles["h2"]))
-    story.append(Paragraph("证据较强", styles["h2"]))
-    strong = list(ai.get("factors_strong") or [])
-    _bullets(story, strong or ["程序未列出更强因果；以下仅作提示。"], styles)
-    story.append(Paragraph("证据中等", styles["h2"]))
-    mid = list(ai.get("factors_mid") or ai.get("causes_ranked") or [])
-    _bullets(story, mid or ["—"], styles)
-    story.append(Paragraph("证据不足", styles["h2"]))
-    weak = list(ai.get("factors_weak") or [])
-    _bullets(
-        story,
-        weak
-        or [
-            "天气、播种、品种、土壤、产量、墒情均未由本系统观测，不能认定。"
-        ],
-        styles,
+    story.append(Spacer(1, 2 * mm))
+    story.append(Paragraph("【可能影响因素】", styles["h2"]))
+    strong = _items_from_value(ai.get("factors_strong"), max_items=4)
+    mid = _items_from_value(
+        ai.get("factors_mid") or ai.get("causes_ranked"), max_items=4
     )
+    weak = _items_from_value(ai.get("factors_weak"), max_items=4)
+    story.append(_factor_cards_row(strong, mid, weak, styles))
 
-    story.append(Paragraph("当前建议", styles["h2"]))
-    now_act = ai.get("actions_now") or "结合田间确认当前冠层与墒情，不宜仅凭遥感安排作业。"
-    week_act = ai.get("actions_week") or "未来7天继续关注官方晴空景与田间脱水情况。"
-    next_act = (
-        ai.get("actions_next_season")
-        or "下一季请补充播种日期、品种与气象资料，以便校准物候估计。"
+    story.append(Spacer(1, 2.5 * mm))
+    story.append(Paragraph("【当前建议】", styles["h2"]))
+    now_items = _items_from_value(
+        ai.get("actions_now")
+        or "结合田间确认当前冠层与墒情，不宜仅凭遥感安排作业。",
+        max_items=5,
     )
+    week_items = _items_from_value(
+        ai.get("actions_week") or "未来7天继续关注官方晴空景与田间脱水情况。",
+        max_items=5,
+    )
+    next_items = _items_from_value(
+        ai.get("actions_next_season")
+        or "下一季请补充播种日期、品种与气象资料，以便校准物候估计。",
+        max_items=5,
+    )
+    story.append(_action_cards_row(now_items, week_items, next_items, styles))
+    story.append(Spacer(1, 2 * mm))
     if harvest.get("status") == "detected" and str(harvest.get("confidence")) == "low":
         harvest_hint = (
-            "收获：疑似进入成熟后期或收获准备阶段，需田间确认，不得作为立即收割依据。"
+            "收获注意：疑似进入成熟后期或收获准备阶段，需田间确认，不得作为立即收割依据。"
         )
     else:
-        harvest_hint = "收获安排须田间确认。"
-    story.append(Paragraph(f"现在：{_esc(now_act)}", styles["body"]))
-    story.append(Paragraph(f"未来7天：{_esc(week_act)}", styles["body"]))
-    story.append(Paragraph(f"下一季：{_esc(next_act)}", styles["body"]))
-    story.append(Paragraph(_esc(harvest_hint), styles["small"]))
+        harvest_hint = "收获注意：收获安排须田间确认，不得作为立即收割依据。"
+    story.append(_caution_banner(harvest_hint, styles))
 
-    story.append(Paragraph("需要补充的证据", styles["h2"]))
-    gaps = list(ai.get("evidence_gaps") or ai.get("follow_up") or [])
+    story.append(Spacer(1, 2.5 * mm))
+    story.append(Paragraph("【需要补充的证据】", styles["h2"]))
+    gaps = _items_from_value(
+        ai.get("evidence_gaps") or ai.get("follow_up"), max_items=8
+    )
     default_gaps = [
         "实测播种日期与品种",
         "土壤墒情或气象降水/蒸发",
         "田间收获进度核实",
         "产量与籽粒含水量（若需评估灾损）",
     ]
-    _bullets(story, gaps or default_gaps, styles)
+    story.append(_gap_chips(gaps or default_gaps, styles))
 
     story.append(Spacer(1, 4 * mm))
     story.append(Paragraph(_esc(disclaimer), styles["footer"]))

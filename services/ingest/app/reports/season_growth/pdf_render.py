@@ -1183,26 +1183,38 @@ def _try_image(path_or_url: Any, *, max_w: float, max_h: float) -> Any | None:
         return None
 
 
-def _dual_visual_row(facts: dict[str, Any], styles: dict) -> Table:
+def _dual_visual_row(
+    facts: dict[str, Any],
+    styles: dict,
+    charts: dict[str, Path] | None = None,
+) -> Table:
     spatial = facts.get("spatial") or {}
+    charts = charts or {}
     rgb = _try_image(
-        spatial.get("rgb_local_path") or spatial.get("latest_rgb_path"),
+        spatial.get("rgb_local_path")
+        or spatial.get("latest_rgb_path")
+        or charts.get("latest_rgb"),
         max_w=_CONTENT_W / 2 - 4 * mm,
         max_h=48 * mm,
     )
     ndvi = _try_image(
-        spatial.get("ndvi_local_path") or spatial.get("latest_ndvi_path"),
+        spatial.get("ndvi_local_path")
+        or spatial.get("ndvi_map_path")
+        or spatial.get("latest_ndvi_path")
+        or charts.get("ndvi_spatial"),
         max_w=_CONTENT_W / 2 - 4 * mm,
         max_h=48 * mm,
     )
     left = rgb or _placeholder_panel("空间图预留，当前版本暂无栅格结果", styles, height_mm=48)
     right = ndvi or _placeholder_panel("空间图预留，当前版本暂无栅格结果", styles, height_mm=48)
+    rgb_date = spatial.get("latest_rgb_date") or "—"
+    ndvi_date = spatial.get("pixel_date") or spatial.get("latest_rgb_date") or "—"
     grid = Table(
         [
             [left, right],
             [
-                Paragraph("最新真彩（边界叠加，如有）", styles["caption"]),
-                Paragraph("最新 NDVI（边界叠加，如有）", styles["caption"]),
+                Paragraph(f"最新真彩（{rgb_date}）", styles["caption"]),
+                Paragraph(f"NDVI 空间分布（{ndvi_date}）", styles["caption"]),
             ],
         ],
         colWidths=[_CONTENT_W / 2, _CONTENT_W / 2],
@@ -1376,7 +1388,7 @@ def render_season_growth_pdf(
     )
     story.append(Paragraph(_esc(meta_line), styles["small_c"]))
     story.append(Spacer(1, 3 * mm))
-    story.append(_dual_visual_row(facts, styles))
+    story.append(_dual_visual_row(facts, styles, charts))
     story.append(Spacer(1, 3 * mm))
     story.append(_status_cards_table(status_cards))
     story.append(Spacer(1, 2 * mm))
@@ -1400,6 +1412,18 @@ def render_season_growth_pdf(
         story.append(_evidence_cards_table(evidence_cards))
     else:
         story.append(Paragraph("（无程序证据卡）", styles["small"]))
+    if charts.get("drought_grades"):
+        story.append(Spacer(1, 2 * mm))
+        story.append(Paragraph("干旱等级分布（程序）", styles["h2"]))
+        _chart_block(
+            story,
+            path=charts.get("drought_grades"),
+            width_mm=120,
+            height_mm=58,
+            caption="图 干旱等级景数（重度/中度/轻度/正常，仅官方可用景）",
+            missing="",
+            styles=styles,
+        )
     story.append(Spacer(1, 3 * mm))
     story.append(Paragraph("判断可信度", styles["h2"]))
     conf_items = list(confidence.get("items") or [])
@@ -1505,13 +1529,45 @@ def render_season_growth_pdf(
     )
     story.append(Spacer(1, 4 * mm))
     story.append(Paragraph("年度峰值对比（仅峰值日期）", styles["h2"]))
-    story.append(_yoy_visual(yoy, styles))
+    if charts.get("yoy_peak"):
+        _chart_block(
+            story,
+            path=charts.get("yoy_peak"),
+            width_mm=120,
+            height_mm=58,
+            caption="图 上年/本年 NDVI 峰值对比（标注峰值日期；提前/推后≠物候整体提前）",
+            missing="",
+            styles=styles,
+        )
+        shift = (yoy.get("peak_date_shift") or {}).get("label") or "峰值日期对比不可用"
+        story.append(
+            Paragraph(
+                f"程序计算：{_esc(shift)}。峰值日期提前/推后 ≠ 物候进程提前相应天数，"
+                "不得据此推断播种或积温。",
+                styles["small"],
+            )
+        )
+    else:
+        story.append(_yoy_visual(yoy, styles))
+    if charts.get("monthly_ndvi"):
+        story.append(Spacer(1, 2 * mm))
+        story.append(Paragraph("月均 NDVI", styles["h2"]))
+        _chart_block(
+            story,
+            path=charts.get("monthly_ndvi"),
+            width_mm=130,
+            height_mm=55,
+            caption="图 窗口内月均 NDVI（官方/可用景）",
+            missing="",
+            styles=styles,
+        )
     story.append(Spacer(1, 3 * mm))
-    story.append(Paragraph("本季关键日期（程序）", styles["h2"]))
+    # Prefer charts over dense tables; keep a compact key-date strip only if no monthly chart
     key_dates = program_key_dates(ndvi=ndvi, drought=drought, harvest=harvest)
-    if key_dates:
+    if key_dates and not charts.get("monthly_ndvi"):
+        story.append(Paragraph("本季关键日期（程序）", styles["h2"]))
         kd_rows = [["日期", "事件", "详情"]]
-        for kd in key_dates[:8]:
+        for kd in key_dates[:6]:
             kd_rows.append(
                 [
                     str(kd.get("date") or "—"),
@@ -1520,55 +1576,114 @@ def render_season_growth_pdf(
                 ]
             )
         story.append(_table(kd_rows, col_widths=[32 * mm, 40 * mm, 106 * mm]))
-    else:
-        story.append(Paragraph("（无关键日期）", styles["small"]))
+    elif key_dates:
+        story.append(Paragraph("本季关键日期（程序）", styles["h2"]))
+        chips = "　".join(
+            f"{kd.get('date') or '—'} {kd.get('label') or ''}"
+            for kd in key_dates[:5]
+        )
+        story.append(Paragraph(_esc(chips), styles["small"]))
     story.append(PageBreak())
 
     # ── P5 空间长势与异常区域 ──
     story.append(Paragraph("空间长势与异常区域", styles["h1"]))
-    story.append(
-        Paragraph(
-            "当前版本暂未生成地块内部空间分级统计",
-            styles["body"],
+    has_pixels = bool(spatial.get("has_pixel_stats"))
+    grade_shares = spatial.get("grade_shares") or {}
+    if has_pixels and grade_shares.get("n"):
+        pct = grade_shares.get("pct") or {}
+        story.append(
+            Paragraph(
+                f"程序像元分级（n={grade_shares.get('n')}，"
+                f"{spatial.get('pixel_date') or '—'}）："
+                f"较好 {pct.get('较好', 0)}% / 正常 {pct.get('正常', 0)}% / "
+                f"偏弱 {pct.get('偏弱', 0)}%。"
+                f"{grade_shares.get('rule_zh') or ''}",
+                styles["body"],
+            )
         )
-    )
+    else:
+        story.append(
+            Paragraph(
+                spatial.get("note")
+                or "当前版本暂未生成地块内部空间分级统计",
+                styles["body"],
+            )
+        )
     story.append(Spacer(1, 2 * mm))
     story.append(
         Paragraph(
-            "当前暂无可靠的空间异常聚集结论",
-            styles["body"],
+            "当前暂无可靠的空间异常聚集结论（不编造东南象限异常）。",
+            styles["small"],
         )
     )
-    story.append(Spacer(1, 4 * mm))
-    rgb_shown = False
-    rgb_path = spatial.get("rgb_local_path") or spatial.get("latest_rgb_path")
-    rgb_url = spatial.get("rgb_url")
-    img = _try_image(rgb_path, max_w=_CONTENT_W, max_h=90 * mm)
-    if img is not None:
-        story.append(img)
-        story.append(Paragraph("最新真彩预览（如有边界）", styles["caption"]))
-        rgb_shown = True
-    elif rgb_url:
+    story.append(Spacer(1, 3 * mm))
+
+    # Dual maps: RGB + NDVI spatial
+    rgb_path = (
+        spatial.get("rgb_local_path")
+        or spatial.get("latest_rgb_path")
+        or charts.get("latest_rgb")
+    )
+    ndvi_path = (
+        spatial.get("ndvi_local_path")
+        or spatial.get("ndvi_map_path")
+        or charts.get("ndvi_spatial")
+    )
+    peak_path = spatial.get("peak_rgb_path") or charts.get("peak_rgb")
+    rgb_img = _try_image(rgb_path, max_w=_CONTENT_W / 2 - 4 * mm, max_h=70 * mm)
+    ndvi_img = _try_image(ndvi_path, max_w=_CONTENT_W / 2 - 4 * mm, max_h=70 * mm)
+    if rgb_img is None and peak_path:
+        rgb_img = _try_image(peak_path, max_w=_CONTENT_W / 2 - 4 * mm, max_h=70 * mm)
+    left = rgb_img or _placeholder_panel(
+        "真彩下载失败或暂无 rgb_url", styles, height_mm=70
+    )
+    right = ndvi_img or _placeholder_panel(
+        "NDVI 空间图暂不可用（像元不足或渲染失败）", styles, height_mm=70
+    )
+    rgb_date = spatial.get("latest_rgb_date") or spatial.get("peak_rgb_date") or "—"
+    ndvi_date = spatial.get("pixel_date") or rgb_date
+    maps = Table(
+        [
+            [left, right],
+            [
+                Paragraph(f"真彩预览（{rgb_date}）", styles["caption"]),
+                Paragraph(f"NDVI 空间分布（{ndvi_date}）", styles["caption"]),
+            ],
+        ],
+        colWidths=[_CONTENT_W / 2, _CONTENT_W / 2],
+    )
+    maps.setStyle(
+        TableStyle(
+            [
+                ("VALIGN", (0, 0), (-1, -1), "TOP"),
+                ("ALIGN", (0, 0), (-1, -1), "CENTER"),
+            ]
+        )
+    )
+    story.append(maps)
+    story.append(Spacer(1, 3 * mm))
+    if charts.get("growth_grades"):
+        _chart_block(
+            story,
+            path=charts.get("growth_grades"),
+            width_mm=110,
+            height_mm=58,
+            caption="图 像元长势等级占比（较好 / 正常 / 偏弱，仅程序像元）",
+            missing="",
+            styles=styles,
+        )
+    elif spatial.get("rgb_url") and rgb_img is None:
         story.append(
-            _placeholder_panel(
-                "已登记 rgb_url，但本版 PDF 未下载栅格预览；空间分级仍未生成。",
-                styles,
-                height_mm=70,
+            Paragraph(
+                "已登记 rgb_url，但本版 PDF 下载栅格预览失败。",
+                styles["small"],
             )
         )
-        rgb_shown = True
-    if not rgb_shown:
-        story.append(
-            _placeholder_panel(
-                "空间图预留，当前版本暂无栅格结果",
-                styles,
-                height_mm=70,
-            )
-        )
-    story.append(Spacer(1, 4 * mm))
+    story.append(Spacer(1, 2 * mm))
     story.append(
         Paragraph(
-            "说明：不编造分区百分比或东南象限异常；待像素级空间统计就绪后填入本页预留版式。",
+            "说明：像元为 lonlat_v1 稀疏点而非规则栅格；等级占比仅由程序像元计算，"
+            "不编造分区百分比。",
             styles["small"],
         )
     )
@@ -1830,7 +1945,18 @@ def render_season_growth_pdf(
         colWidths=[(_CONTENT_W - 6 * mm) / 3] * 3,
     )
     story.append(s1_overview)
-    story.append(Spacer(1, 3 * mm))
+    story.append(Spacer(1, 2 * mm))
+    if charts.get("s1_status"):
+        _chart_block(
+            story,
+            path=charts.get("s1_status"),
+            width_mm=100,
+            height_mm=52,
+            caption="图 S1 状态分布（正常 / 关注 / 洪涝）",
+            missing="",
+            styles=styles,
+        )
+    story.append(Spacer(1, 2 * mm))
     if int(flood.get("flood_scene_count") or 0) <= 0:
         story.append(
             Paragraph(

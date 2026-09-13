@@ -513,7 +513,9 @@ class SeasonGrowthPdfTests(unittest.TestCase):
                 from pypdf import PdfReader
                 n = len(PdfReader(str(path)).pages)
             except Exception:
-                n = path.read_bytes().count(b"/Type /Page")
+                raw = path.read_bytes()
+                # Avoid counting /Type /Pages parent node
+                n = raw.count(b"/Type /Page\n") + raw.count(b"/Type /Page ")
             self.assertEqual(n, 10)
             extracted = _pdf_text(path)
             for banned in ("排水条件良好", "无渍涝隐患", "生物量达标", "建议立即收割"):
@@ -521,6 +523,87 @@ class SeasonGrowthPdfTests(unittest.TestCase):
             if "空间" in extracted:
                 self.assertIn("暂未生成地块内部空间分级统计", extracted)
                 self.assertIn("暂无可靠的空间异常聚集结论", extracted)
+
+
+
+    def test_charts_and_spatial_in_pdf(self) -> None:
+        """Product charts + spatial dates embed; still exactly 10 pages."""
+        from app.reports.season_growth.charts import render_season_charts
+
+        facts = _rich_facts()
+        facts["spatial"] = {
+            "has_pixel_stats": True,
+            "has_anomaly_cluster": False,
+            "latest_rgb_date": "2026-09-10",
+            "peak_rgb_date": "2026-07-07",
+            "pixel_date": "2026-09-10",
+            "rgb_url": "http://example/rgb.png",
+            "latest_rgb_url": "http://example/rgb.png",
+            "grade_shares": {
+                "n": 90,
+                "counts": {"较好": 40, "正常": 30, "偏弱": 20},
+                "pct": {"较好": 44.4, "正常": 33.3, "偏弱": 22.2},
+                "rule_zh": "较好≥0.55 / 正常0.35–0.55 / 偏弱<0.35",
+                "labels": ["较好", "正常", "偏弱"],
+            },
+            "pixel_points": [
+                {
+                    "lon": 116.08 + i * 0.00015,
+                    "lat": 37.46 + (i % 8) * 0.00015,
+                    "ndvi": 0.2 + (i % 7) * 0.1,
+                    "clear": 1,
+                }
+                for i in range(48)
+            ],
+            "note": "像元为 lonlat_v1 稀疏点",
+        }
+        # ensure timeline has ndvi_mean for monthly chart
+        for row in facts["timeline"]:
+            row["ndvi_mean"] = 0.45
+        ai = _rich_ai()
+        with tempfile.TemporaryDirectory() as tmp:
+            # Tiny local RGB so P1/P5 embed imagery instead of placeholders
+            from PIL import Image as PILImage
+            rgb_path = Path(tmp) / "latest_rgb.png"
+            PILImage.new("RGB", (120, 80), color=(34, 120, 60)).save(rgb_path)
+            facts["spatial"]["latest_rgb_path"] = str(rgb_path)
+            facts["spatial"]["rgb_local_path"] = str(rgb_path)
+            charts = render_season_charts(facts, Path(tmp) / "charts")
+            self.assertIn("ndvi_ndmi", charts)
+            self.assertIn("drought_grades", charts)
+            self.assertIn("yoy_peak", charts)
+            self.assertIn("monthly_ndvi", charts)
+            self.assertIn("s1_status", charts)
+            self.assertIn("growth_grades", charts)
+            self.assertIn("ndvi_spatial", charts)
+            out = Path(tmp) / "season_spatial.pdf"
+            path = render_season_growth_pdf(
+                facts=facts,
+                ai=ai,
+                chart_paths=charts,
+                materials_meta=[],
+                out_path=out,
+            )
+            self.assertTrue(path.exists())
+            try:
+                from pypdf import PdfReader
+                n = len(PdfReader(str(path)).pages)
+            except Exception:
+                import subprocess
+                info = subprocess.run(
+                    ["pdfinfo", str(path)], capture_output=True, text=True, check=False
+                )
+                n = 0
+                for line in info.stdout.splitlines():
+                    if line.startswith("Pages:"):
+                        n = int(line.split(":")[1].strip())
+            self.assertEqual(n, 10)
+            extracted = _pdf_text(path)
+            self.assertIn("2026-09-10", extracted)
+            # With local RGB + NDVI map, cover should not be placeholder-only
+            if "空间" in extracted or "长势" in extracted:
+                self.assertNotIn("空间图预留，当前版本暂无栅格结果", extracted)
+                self.assertIn("真彩预览（2026-09-10）", extracted)
 
 
 if __name__ == "__main__":

@@ -100,7 +100,14 @@ def load_agri_s2_rows(
             SELECT date, scene_id, ndvi_avg, evi_avg, mndwi_avg, ndmi_avg,
                    parcel_cloud_cover_pct, cloud_cover,
                    pixel_data->>'source' AS source,
-                   pixel_data->>'decloud_quality' AS decloud_quality
+                   pixel_data->>'decloud_quality' AS decloud_quality,
+                   rgb_url, large_rgb_url, rgb_oss_key,
+                   pixel_data->>'format' AS pixel_format,
+                   CASE
+                     WHEN jsonb_typeof(pixel_data->'pixels') = 'array'
+                     THEN jsonb_array_length(pixel_data->'pixels')
+                     ELSE 0
+                   END AS pixel_n
             FROM agri.parcel_scene_products
             WHERE land_id = :land_id AND sensor = 'S2'
               AND date >= :start_date AND date <= :end_date
@@ -143,8 +150,19 @@ def load_agri_s2_rows(
                 "source": r.get("source"),
                 "official": bool(official),
                 "clear": cloud is not None and cloud <= CLOUD_MAX_PCT,
+                "rgb_url": (r.get("rgb_url") or None) or None,
+                "large_rgb_url": (r.get("large_rgb_url") or None) or None,
+                "rgb_oss_key": (r.get("rgb_oss_key") or None) or None,
+                "pixel_format": r.get("pixel_format"),
+                "pixel_n": int(r["pixel_n"] or 0) if r.get("pixel_n") is not None else 0,
             }
         )
+        if out[-1]["rgb_url"] == "":
+            out[-1]["rgb_url"] = None
+        if out[-1]["large_rgb_url"] == "":
+            out[-1]["large_rgb_url"] = None
+        if out[-1]["rgb_oss_key"] == "":
+            out[-1]["rgb_oss_key"] = None
     return out
 
 
@@ -1367,6 +1385,269 @@ FOOTER_DISCLAIMER = (
 )
 
 
+
+# ── Spatial RGB / NDVI pixel helpers ──────────────────────────────────
+
+GROWTH_GRADE_ORDER = ("较好", "正常", "偏弱")
+GROWTH_GRADE_RULE_ZH = "较好≥0.55 / 正常0.35–0.55 / 偏弱<0.35"
+
+
+def classify_growth_grade(ndvi: float) -> str:
+    """Map pixel NDVI to 较好/正常/偏弱."""
+    if ndvi >= 0.55:
+        return "较好"
+    if ndvi >= 0.35:
+        return "正常"
+    return "偏弱"
+
+
+def compute_growth_grade_shares(values: list[float]) -> dict[str, Any]:
+    """Program-only grade shares from pixel NDVI values."""
+    used = [float(v) for v in values if v is not None]
+    counts = {g: 0 for g in GROWTH_GRADE_ORDER}
+    for v in used:
+        counts[classify_growth_grade(v)] += 1
+    n = len(used)
+    pct = {
+        g: (round(counts[g] * 100.0 / n, 1) if n else 0.0) for g in GROWTH_GRADE_ORDER
+    }
+    return {
+        "n": n,
+        "counts": counts,
+        "pct": pct,
+        "rule_zh": GROWTH_GRADE_RULE_ZH,
+        "labels": list(GROWTH_GRADE_ORDER),
+    }
+
+
+def _scene_has_rgb(row: dict[str, Any]) -> bool:
+    return bool(row.get("rgb_url") or row.get("rgb_oss_key") or row.get("large_rgb_url"))
+
+
+def _pick_rgb_scene(
+    rows: list[dict[str, Any]],
+    *,
+    prefer_date: str | None = None,
+    require_clear: bool = True,
+) -> dict[str, Any] | None:
+    """Pick usable S2 scene with RGB: official/clear preferred, then closest to prefer_date."""
+    candidates = [r for r in rows if _scene_has_rgb(r)]
+    if not candidates:
+        return None
+
+    def score(r: dict[str, Any]) -> tuple:
+        cloud = r.get("cloud_pct")
+        cloud_pen = float(cloud) if cloud is not None else 99.0
+        official = 1 if r.get("official") else 0
+        clear = 1 if r.get("clear") else 0
+        date_dist = 0
+        if prefer_date:
+            pd = _parse_date(prefer_date)
+            rd = _parse_date(r.get("date"))
+            if pd and rd:
+                date_dist = abs((rd - pd).days)
+            else:
+                date_dist = 9999
+        # Prefer official/clear, then closest to prefer_date, then lower cloud
+        return (official, clear if require_clear else 1, -date_dist, -cloud_pen)
+
+    # Prefer clear+official first; fall back without require_clear
+    usable = [r for r in candidates if r.get("official") or r.get("clear")]
+    pool = usable or candidates
+    if require_clear:
+        clear_pool = [r for r in pool if r.get("clear")]
+        if clear_pool:
+            pool = clear_pool
+    return max(pool, key=score)
+
+
+def load_scene_lonlat_pixels(
+    session: "Session",
+    land_id: str,
+    scene_date: str,
+    *,
+    prefer_clear: bool = True,
+) -> list[dict[str, Any]]:
+    """Load lonlat_v1 pixels for one land_id + date (sparse points, not a grid)."""
+    from sqlalchemy import text
+
+    if not land_id or not scene_date:
+        return []
+    row = (
+        session.execute(
+            text(
+                """
+            SELECT pixel_data
+            FROM agri.parcel_scene_products
+            WHERE land_id = :land_id AND sensor = 'S2' AND date = CAST(:d AS date)
+              AND pixel_data->>'format' = 'lonlat_v1'
+            ORDER BY
+              CASE WHEN coalesce(parcel_cloud_cover_pct, cloud_cover) <= 20 THEN 0 ELSE 1 END,
+              date DESC
+            LIMIT 1
+            """
+            ),
+            {"land_id": land_id, "d": str(scene_date)[:10]},
+        )
+        .mappings()
+        .first()
+    )
+    if not row:
+        return []
+    pixel_data = row.get("pixel_data")
+    if not isinstance(pixel_data, dict):
+        return []
+    raw = pixel_data.get("pixels")
+    if not isinstance(raw, list):
+        return []
+    out: list[dict[str, Any]] = []
+    for pix in raw:
+        if not isinstance(pix, dict):
+            continue
+        lon, lat = pix.get("lon"), pix.get("lat")
+        ndvi = pix.get("NDVI")
+        if lon is None or lat is None or ndvi is None:
+            continue
+        try:
+            float(lon)
+            float(lat)
+            float(ndvi)
+        except (TypeError, ValueError):
+            continue
+        out.append(pix)
+    if prefer_clear:
+        cleared = [p for p in out if int(p.get("clear") or 0) == 1]
+        if cleared:
+            return cleared
+    return out
+
+
+def build_spatial_block(
+    session: "Session | None",
+    *,
+    land_id: str | None,
+    s2_rows: list[dict[str, Any]],
+    ndvi_peak: dict[str, Any] | None,
+    ndvi_latest: dict[str, Any] | None,
+) -> dict[str, Any]:
+    """Populate spatial facts: RGB URLs + optional pixel grade shares / points."""
+    latest_target = (ndvi_latest or {}).get("date")
+    peak_target = (ndvi_peak or {}).get("date")
+    latest_scene = _pick_rgb_scene(s2_rows, prefer_date=latest_target)
+    peak_scene = _pick_rgb_scene(s2_rows, prefer_date=peak_target)
+    # Prefer distinct peak when peak date differs; else reuse latest
+    if (
+        peak_scene
+        and latest_scene
+        and peak_scene.get("date") == latest_scene.get("date")
+        and peak_target
+        and latest_target
+        and str(peak_target)[:10] != str(latest_target)[:10]
+    ):
+        # try harder for a scene closer to peak
+        alt = _pick_rgb_scene(s2_rows, prefer_date=peak_target, require_clear=False)
+        if alt and alt.get("date") != latest_scene.get("date"):
+            peak_scene = alt
+
+    spatial: dict[str, Any] = {
+        "has_pixel_stats": False,
+        "has_anomaly_cluster": False,
+        "rgb_url": None,
+        "latest_rgb_url": None,
+        "latest_rgb_date": None,
+        "latest_large_rgb_url": None,
+        "latest_rgb_oss_key": None,
+        "peak_rgb_url": None,
+        "peak_rgb_date": None,
+        "peak_large_rgb_url": None,
+        "peak_rgb_oss_key": None,
+        "large_rgb_url": None,
+        "rgb_local_path": None,
+        "latest_rgb_path": None,
+        "peak_rgb_path": None,
+        "ndvi_local_path": None,
+        "ndvi_map_path": None,
+        "grade_shares": None,
+        "pixel_points": None,
+        "pixel_date": None,
+        "pixel_format": None,
+        "pixel_n": 0,
+        "note": None,
+    }
+
+    if latest_scene:
+        spatial["latest_rgb_url"] = latest_scene.get("rgb_url") or latest_scene.get(
+            "large_rgb_url"
+        )
+        spatial["latest_rgb_date"] = latest_scene.get("date")
+        spatial["latest_large_rgb_url"] = latest_scene.get("large_rgb_url")
+        spatial["latest_rgb_oss_key"] = latest_scene.get("rgb_oss_key")
+        spatial["rgb_url"] = spatial["latest_rgb_url"]
+        spatial["large_rgb_url"] = latest_scene.get("large_rgb_url")
+
+    if peak_scene:
+        spatial["peak_rgb_url"] = peak_scene.get("rgb_url") or peak_scene.get(
+            "large_rgb_url"
+        )
+        spatial["peak_rgb_date"] = peak_scene.get("date")
+        spatial["peak_large_rgb_url"] = peak_scene.get("large_rgb_url")
+        spatial["peak_rgb_oss_key"] = peak_scene.get("rgb_oss_key")
+
+    # Load pixels for latest clear scene (prefer latest NDVI date, else peak)
+    pixel_date = None
+    for cand in (latest_scene, peak_scene):
+        if cand and cand.get("pixel_n", 0) > 0 and cand.get("clear"):
+            pixel_date = cand.get("date")
+            break
+    if pixel_date is None:
+        for cand in (latest_scene, peak_scene):
+            if cand and cand.get("pixel_n", 0) > 0:
+                pixel_date = cand.get("date")
+                break
+
+    pixels: list[dict[str, Any]] = []
+    if session is not None and land_id and pixel_date:
+        try:
+            pixels = load_scene_lonlat_pixels(session, land_id, str(pixel_date))
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("load_scene_lonlat_pixels failed: %s", exc)
+            pixels = []
+
+    if pixels:
+        vals = []
+        points = []
+        for p in pixels:
+            v = _num(p.get("NDVI"))
+            if v is None:
+                continue
+            vals.append(v)
+            points.append(
+                {
+                    "lon": float(p["lon"]),
+                    "lat": float(p["lat"]),
+                    "ndvi": round(v, 4),
+                    "clear": int(p.get("clear") or 0),
+                }
+            )
+        shares = compute_growth_grade_shares(vals) if vals else None
+        spatial["has_pixel_stats"] = bool(vals)
+        spatial["grade_shares"] = shares
+        spatial["pixel_points"] = points
+        spatial["pixel_date"] = str(pixel_date)[:10]
+        spatial["pixel_format"] = "lonlat_v1"
+        spatial["pixel_n"] = len(points)
+        spatial["note"] = (
+            f"像元为 lonlat_v1 稀疏点（n={len(points)}），非规则栅格；"
+            f"等级占比按程序阈值：{GROWTH_GRADE_RULE_ZH}。"
+        )
+    elif spatial.get("rgb_url") or spatial.get("peak_rgb_url"):
+        spatial["note"] = "已登记真彩预览；像元级空间分级暂不可用或加载失败。"
+    else:
+        spatial["note"] = "当前版本暂未生成地块内部空间分级统计"
+
+    return spatial
+
+
 def build_season_facts(
     session: "Session",
     field_id: uuid.UUID | str,
@@ -1688,14 +1969,13 @@ def build_season_facts(
         "program_core_conclusion": core_line,
         "program_conclusions": conclusions,
         "disclaimer": FOOTER_DISCLAIMER,
-        "spatial": {
-            "has_pixel_stats": False,
-            "has_anomaly_cluster": False,
-            "rgb_url": None,
-            "rgb_local_path": None,
-            "ndvi_local_path": None,
-            "note": "当前版本暂未生成地块内部空间分级统计",
-        },
+        "spatial": build_spatial_block(
+            session if land_id else None,
+            land_id=land_id,
+            s2_rows=s2 if s2 else [],
+            ndvi_peak=peak,
+            ndvi_latest=latest,
+        ),
     }
     return facts
 

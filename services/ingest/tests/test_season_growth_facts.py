@@ -24,6 +24,10 @@ from app.reports.season_growth.facts import (
     program_next_season_actions,
     looks_like_remote_ops_advice,
     quality_cn,
+    compute_growth_grade_shares,
+    classify_growth_grade,
+    _pick_rgb_scene,
+    build_spatial_block,
 )
 
 
@@ -381,6 +385,73 @@ class SeasonGrowthFactsTests(unittest.TestCase):
         self.assertNotIn("多源卫星", text)
         self.assertTrue(("灌溉" in text) or ("墒情" in text))
         self.assertTrue(looks_like_remote_ops_advice("增加多源卫星或无人机补测频次"))
+
+
+
+    def test_growth_grade_shares(self) -> None:
+        shares = compute_growth_grade_shares([0.7, 0.6, 0.4, 0.2, 0.1])
+        self.assertEqual(shares["n"], 5)
+        self.assertEqual(shares["counts"]["较好"], 2)
+        self.assertEqual(shares["counts"]["正常"], 1)
+        self.assertEqual(shares["counts"]["偏弱"], 2)
+        self.assertEqual(classify_growth_grade(0.55), "较好")
+        self.assertEqual(classify_growth_grade(0.35), "正常")
+        self.assertEqual(classify_growth_grade(0.34), "偏弱")
+
+    def test_pick_rgb_scene_prefers_clear(self) -> None:
+        rows = [
+            {
+                "date": "2026-09-08",
+                "rgb_url": "http://x/a.png",
+                "official": True,
+                "clear": False,
+                "cloud_pct": 90.0,
+            },
+            {
+                "date": "2026-09-10",
+                "rgb_url": "http://x/b.png",
+                "official": True,
+                "clear": True,
+                "cloud_pct": 5.0,
+            },
+            {
+                "date": "2026-07-07",
+                "rgb_url": "http://x/c.png",
+                "official": True,
+                "clear": True,
+                "cloud_pct": 3.0,
+            },
+        ]
+        latest = _pick_rgb_scene(rows, prefer_date="2026-09-10")
+        self.assertIsNotNone(latest)
+        self.assertEqual(latest["date"], "2026-09-10")
+        peak = _pick_rgb_scene(rows, prefer_date="2026-07-07")
+        self.assertEqual(peak["date"], "2026-07-07")
+
+    def test_build_spatial_block_urls(self) -> None:
+        rows = [
+            {
+                "date": "2026-09-10",
+                "rgb_url": "http://example/rgb.png",
+                "large_rgb_url": "http://example/large.png",
+                "rgb_oss_key": "s1s2_parcel/img/6597/x.png",
+                "official": True,
+                "clear": True,
+                "cloud_pct": 0.0,
+                "pixel_n": 0,
+            }
+        ]
+        spatial = build_spatial_block(
+            None,
+            land_id=None,
+            s2_rows=rows,
+            ndvi_peak={"date": "2026-09-10", "value": 0.5},
+            ndvi_latest={"date": "2026-09-10", "value": 0.4},
+        )
+        self.assertEqual(spatial["latest_rgb_url"], "http://example/rgb.png")
+        self.assertEqual(spatial["latest_rgb_date"], "2026-09-10")
+        self.assertIsNotNone(spatial["rgb_url"])
+        self.assertFalse(spatial["has_pixel_stats"])
 
 
 if __name__ == "__main__":

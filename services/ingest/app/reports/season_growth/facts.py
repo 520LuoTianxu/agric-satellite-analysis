@@ -413,6 +413,15 @@ FLOOD_CLASS_CN = {
     "dry": "正常",
 }
 
+QUALITY_CN = {
+    "official": "官方",
+    "good": "良好",
+    "fair": "一般",
+    "bad": "较差",
+    "raw": "原始",
+    "classic": "经典",
+}
+
 
 def drought_class_cn(cls: str | None) -> str:
     if cls is None:
@@ -426,6 +435,13 @@ def flood_class_cn(cls: str | None) -> str:
     return FLOOD_CLASS_CN.get(str(cls), str(cls))
 
 
+def quality_cn(quality: str | None) -> str:
+    if quality is None or quality == "":
+        return "—"
+    q = str(quality).strip().lower()
+    return QUALITY_CN.get(q, str(quality))
+
+
 def _methodology() -> dict[str, Any]:
     """Short Chinese summary of drought / flood rules (mirrors agri_classify)."""
     return {
@@ -434,10 +450,10 @@ def _methodology() -> dict[str, Any]:
             "以 NDDI=(NDVI-NDMI)/(NDVI+NDMI) 为主，结合同月 NDDI 分位及 NDMI/NDVI 相对同月中位数的下降；"
             "轻度/中度/重度对应 NDDI 阈值与绿度跌幅；季外标「季外」，非官方标「不可靠」。"
         ),
-        "flood": (
+                "flood": (
             "Sentinel-1 洪涝：按相对轨道建 VV 基线；"
-            "洪涝需同时满足 VV≤−17.0 dB、相对基线下降≥3 dB，且 VH 或 VV−VH 辅助条件；"
-            "VV≤−15.0 dB 的近阈值情形标「关注」；仅 VV−VH 不会单独判洪涝。"
+            "洪涝需同时满足 VV≤-17.0 dB、相对基线下降≥3.0 dB，且 VH 或 VV-VH 辅助条件；"
+            "VV≤-15.0 dB 的近阈值情形标「关注」；仅 VV-VH 不会单独判洪涝。"
         ),
         "sensors": "Sentinel-2（光学 NDVI/NDMI/EVI/MNDWI）与 Sentinel-1（SAR VV/VH）。",
     }
@@ -455,11 +471,13 @@ def _build_s2_appendix(
     for r in s2_rows:
         d = str(r.get("date") or "")
         cls = class_by_date.get(d)
+        q = r.get("decloud_quality") or ("official" if r.get("official") else "raw")
         out.append(
             {
                 "date": d,
                 "cloud_pct": r.get("cloud_pct"),
-                "quality": r.get("decloud_quality") or ("official" if r.get("official") else "raw"),
+                "quality": q,
+                "quality_cn": quality_cn(q),
                 "drought_class": cls,
                 "drought_class_cn": drought_class_cn(cls),
                 "ndvi": r.get("ndvi_avg"),
@@ -718,6 +736,7 @@ def build_season_facts(
                     "date": d,
                     "cloud_pct": 0.0,
                     "quality": "classic",
+                    "quality_cn": quality_cn("classic"),
                     "drought_class": cls,
                     "drought_class_cn": drought_class_cn(cls),
                     "ndvi": p.get("value"),

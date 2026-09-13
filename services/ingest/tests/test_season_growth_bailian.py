@@ -112,5 +112,12 @@ class BailianClientTests(unittest.TestCase):
         self.assertIn("建议1", out["recommendations"] or "")
 
 
+    def test_system_prompt_forbids_english_keys(self) -> None:
+        prompt = bailian.SYSTEM_PROMPT
+        self.assertIn("英文字段名", prompt)
+        self.assertIn("flood_scene_count", prompt)
+        self.assertIn("不要整段复制", prompt)
+
+
 if __name__ == "__main__":
     unittest.main()

@@ -188,7 +188,32 @@ def render_s1_vv_chart(
     ax.set_ylabel("VV (dB)")
     ax.set_xlabel("日期")
     ax.grid(True, alpha=0.25)
-    ax.legend(loc="best", fontsize=8)
+    from matplotlib.lines import Line2D
+
+    handles, labels = ax.get_legend_handles_labels()
+    extra = [
+        Line2D(
+            [0],
+            [0],
+            marker="o",
+            color="w",
+            markerfacecolor=c,
+            markersize=7,
+            label=lab,
+        )
+        for lab, c in (
+            ("正常", _FLOOD_MARKER_COLORS["dry"]),
+            ("关注", _FLOOD_MARKER_COLORS["watch"]),
+            ("洪涝", _FLOOD_MARKER_COLORS["flood_moderate"]),
+            ("洪涝(重)", _FLOOD_MARKER_COLORS["flood_severe"]),
+        )
+    ]
+    ax.legend(
+        handles + extra,
+        labels + [h.get_label() for h in extra],
+        loc="best",
+        fontsize=7,
+    )
     fig.autofmt_xdate(rotation=30)
     fig.tight_layout()
     fig.savefig(out, bbox_inches="tight")

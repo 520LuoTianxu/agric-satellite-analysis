@@ -16,6 +16,7 @@ from app.reports.season_growth.facts import (
     drought_class_cn,
     facts_for_llm,
     flood_class_cn,
+    quality_cn,
 )
 from datetime import date
 
@@ -133,9 +134,18 @@ class SeasonGrowthFactsTests(unittest.TestCase):
         meth = _methodology()
         self.assertIn("drought", meth)
         self.assertIn("flood", meth)
+        # ASCII hyphen thresholds must survive (avoid lost Unicode minus glyph)
+        self.assertIn("-17.0", meth["flood"])
+        self.assertIn("-15.0", meth["flood"])
+        self.assertIn("3.0", meth["flood"])
         self.assertEqual(drought_class_cn("severe"), "重度")
         self.assertEqual(flood_class_cn("watch"), "关注")
         self.assertEqual(flood_class_cn(None), "缺测/未定")
+        self.assertEqual(quality_cn("good"), "良好")
+        self.assertEqual(quality_cn("official"), "官方")
+        self.assertEqual(quality_cn("bad"), "较差")
+        self.assertIn("quality_cn", s2_app[0])
+        self.assertEqual(s2_app[0]["quality_cn"], "良好")
 
     def test_facts_for_llm_truncates(self) -> None:
         series = [{"date": f"2026-06-{(i % 28) + 1:02d}", "value": 0.4 + i * 0.001} for i in range(80)]

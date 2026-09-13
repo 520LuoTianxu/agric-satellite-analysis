@@ -3,7 +3,7 @@
 
 from __future__ import annotations
 
-from datetime import datetime
+from datetime import datetime, timedelta
 from pathlib import Path
 from typing import Any
 
@@ -12,6 +12,8 @@ import matplotlib
 matplotlib.use("Agg")
 import matplotlib.pyplot as plt
 from matplotlib import font_manager
+from matplotlib.lines import Line2D
+from matplotlib.patches import Patch
 
 from app.core.agri_classify import FLOOD_VV_MAX, WATCH_VV_MAX
 from app.reports.land_assessment.paths import FONT_PATH
@@ -32,6 +34,15 @@ _FLOOD_MARKER_COLORS = {
     "flood_severe": "#c62828",
 }
 
+_PHENO_BAND_COLORS = (
+    "#e8f5e9",
+    "#fff8e1",
+    "#e3f2fd",
+    "#fce4ec",
+    "#f3e5f5",
+    "#efebe9",
+)
+
 
 def _setup_font() -> None:
     if FONT_PATH.exists():
@@ -50,13 +61,101 @@ def _drought_class_by_date(facts: dict[str, Any]) -> dict[str, str]:
     return out
 
 
+def _to_dt(value: Any) -> datetime | None:
+    if value is None:
+        return None
+    try:
+        return datetime.fromisoformat(str(value)[:10])
+    except ValueError:
+        return None
+
+
+def point_is_reliable(point: dict[str, Any], class_by_date: dict[str, str] | None = None) -> bool:
+    """Official/usable points participate in the trend line; others are hollow."""
+    if point.get("official") is False:
+        return False
+    if point.get("official") is True:
+        return True
+    q = str(point.get("quality") or point.get("decloud_quality") or "").lower()
+    if q in ("bad", "raw", "fair", "poor"):
+        return False
+    return True
+
+
+def _split_series(
+    series: list[dict[str, Any]], class_by_date: dict[str, str]
+) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
+    reliable: list[dict[str, Any]] = []
+    unreliable: list[dict[str, Any]] = []
+    for p in series:
+        if p.get("value") is None or not p.get("date"):
+            continue
+        if point_is_reliable(p, class_by_date):
+            reliable.append(p)
+        else:
+            unreliable.append(p)
+    return reliable, unreliable
+
+
+def _draw_phenology_bands(ax, facts: dict[str, Any]) -> None:
+    bands = list(facts.get("phenology_estimate") or [])
+    if not bands:
+        return
+    ymin, ymax = ax.get_ylim()
+    for i, band in enumerate(bands):
+        a = _to_dt(band.get("start"))
+        b = _to_dt(band.get("end"))
+        if not a or not b:
+            continue
+        color = _PHENO_BAND_COLORS[i % len(_PHENO_BAND_COLORS)]
+        ax.axvspan(a, b + timedelta(days=1), color=color, alpha=0.35, zorder=0)
+        mid = a + (b - a) / 2
+        label = str(band.get("label") or "")
+        if label:
+            ax.text(
+                mid,
+                ymax - (ymax - ymin) * 0.04,
+                label,
+                ha="center",
+                va="top",
+                fontsize=6.5,
+                color="#5d6d5e",
+                zorder=4,
+            )
+
+
+def _dry_spells(class_by_date: dict[str, str]) -> list[tuple[datetime, datetime]]:
+    drought_dates = sorted(
+        _to_dt(d)
+        for d, c in class_by_date.items()
+        if c in ("mild", "moderate", "severe") and _to_dt(d)
+    )
+    drought_dates = [d for d in drought_dates if d is not None]
+    if len(drought_dates) < 2:
+        return []
+    spells: list[tuple[datetime, datetime]] = []
+    run_start = drought_dates[0]
+    prev = drought_dates[0]
+    for d in drought_dates[1:]:
+        if (d - prev).days <= 8:
+            prev = d
+            continue
+        if prev != run_start:
+            spells.append((run_start, prev))
+        run_start = d
+        prev = d
+    if prev != run_start:
+        spells.append((run_start, prev))
+    return spells
+
+
 def render_ndvi_ndmi_chart(
     facts: dict[str, Any],
     out_path: Path | str,
     *,
     scene_classes: list[dict[str, Any]] | None = None,
 ) -> Path | None:
-    """Write NDVI (colored by drought class) + NDMI line chart. Returns path or None."""
+    """NDVI/NDMI: solid line through reliable points only; unreliable = hollow gray."""
     ndvi = list((facts.get("ndvi") or {}).get("series") or [])
     ndmi = list((facts.get("ndmi") or {}).get("series") or [])
     if not ndvi and not ndmi:
@@ -75,44 +174,114 @@ def render_ndvi_ndmi_chart(
     out = Path(out_path)
     out.parent.mkdir(parents=True, exist_ok=True)
 
-    fig, ax = plt.subplots(figsize=(7.2, 3.6), dpi=140)
-    if ndvi:
-        xs = [datetime.fromisoformat(p["date"][:10]) for p in ndvi]
-        ys = [float(p["value"]) for p in ndvi]
-        # NDVI line (neutral) + drought-colored markers
-        ax.plot(xs, ys, color="#66bb6a", linewidth=1.4, label="NDVI", zorder=2)
+    fig, ax = plt.subplots(figsize=(7.4, 3.55), dpi=140)
+
+    rel_ndvi, unrel_ndvi = _split_series(ndvi, class_by_date)
+    rel_ndmi, unrel_ndmi = _split_series(ndmi, class_by_date)
+
+    if rel_ndvi:
+        xs = [datetime.fromisoformat(p["date"][:10]) for p in rel_ndvi]
+        ys = [float(p["value"]) for p in rel_ndvi]
+        ax.plot(xs, ys, color="#66bb6a", linewidth=1.6, label="NDVI（可靠）", zorder=2)
         colors = [
             _DROUGHT_MARKER_COLORS.get(
                 class_by_date.get(p["date"][:10], "normal"), "#2e7d32"
             )
-            for p in ndvi
+            for p in rel_ndvi
         ]
-        ax.scatter(xs, ys, c=colors, s=28, zorder=3, edgecolors="white", linewidths=0.4)
-    if ndmi:
-        xs2 = [datetime.fromisoformat(p["date"][:10]) for p in ndmi]
-        ys2 = [float(p["value"]) for p in ndmi]
+        ax.scatter(
+            xs, ys, c=colors, s=30, zorder=3, edgecolors="white", linewidths=0.4
+        )
+    if unrel_ndvi:
+        xu = [datetime.fromisoformat(p["date"][:10]) for p in unrel_ndvi]
+        yu = [float(p["value"]) for p in unrel_ndvi]
+        ax.scatter(
+            xu,
+            yu,
+            facecolors="none",
+            edgecolors="#bdbdbd",
+            s=26,
+            linewidths=0.9,
+            zorder=3,
+            label="不可靠点（不连线）",
+        )
+    if rel_ndmi:
+        xs2 = [datetime.fromisoformat(p["date"][:10]) for p in rel_ndmi]
+        ys2 = [float(p["value"]) for p in rel_ndmi]
         ax.plot(
             xs2,
             ys2,
             color="#1565c0",
-            marker="s",
-            markersize=3,
-            linewidth=1.4,
-            label="NDMI",
-            alpha=0.9,
+            linewidth=1.5,
+            label="NDMI（可靠）",
+            alpha=0.95,
             zorder=2,
         )
+        ax.scatter(
+            xs2,
+            ys2,
+            facecolors="#1565c0",
+            edgecolors="white",
+            s=18,
+            marker="s",
+            zorder=3,
+            linewidths=0.3,
+        )
+    if unrel_ndmi:
+        xu2 = [datetime.fromisoformat(p["date"][:10]) for p in unrel_ndmi]
+        yu2 = [float(p["value"]) for p in unrel_ndmi]
+        ax.scatter(
+            xu2,
+            yu2,
+            facecolors="none",
+            edgecolors="#90a4ae",
+            s=18,
+            marker="s",
+            linewidths=0.8,
+            zorder=3,
+        )
+
+    # Annotate peak / latest official
+    peak = (facts.get("ndvi") or {}).get("peak") or {}
+    if peak.get("date") and peak.get("value") is not None:
+        pdt = _to_dt(peak["date"])
+        if pdt is not None:
+            ax.annotate(
+                f"峰值 {float(peak['value']):.3f}",
+                xy=(pdt, float(peak["value"])),
+                xytext=(8, 10),
+                textcoords="offset points",
+                fontsize=7.5,
+                color="#1b4332",
+                arrowprops={"arrowstyle": "->", "color": "#1b4332", "lw": 0.7},
+            )
+    latest = (facts.get("ndvi") or {}).get("latest") or {}
+    if latest.get("date") and latest.get("value") is not None:
+        ldt = _to_dt(latest["date"])
+        peak_date = str(peak.get("date") or "")
+        if ldt is not None and str(latest.get("date")) != peak_date:
+            ax.annotate(
+                f"最新 {float(latest['value']):.3f}",
+                xy=(ldt, float(latest["value"])),
+                xytext=(-28, -14),
+                textcoords="offset points",
+                fontsize=7.5,
+                color="#37474f",
+            )
+
+    for a, b in _dry_spells(class_by_date):
+        ax.axvspan(a, b + timedelta(days=1), color="#ffcdd2", alpha=0.18, zorder=0)
+
     win = facts.get("window") or {}
-    title = "生育期 NDVI / NDMI 长势曲线"
+    title = "生育期 NDVI / NDMI（可靠点连线）"
     label = win.get("label")
     if label:
         title = f"{title}（{label}）"
-    ax.set_title(title, fontsize=11)
+    ax.set_title(title, fontsize=10)
     ax.set_ylabel("指数值")
     ax.set_xlabel("日期")
-    ax.grid(True, alpha=0.25)
-    # Compact drought legend
-    from matplotlib.lines import Line2D
+    ax.grid(True, alpha=0.25, zorder=0)
+    _draw_phenology_bands(ax, facts)
 
     handles, labels = ax.get_legend_handles_labels()
     extra = [
@@ -122,7 +291,7 @@ def render_ndvi_ndmi_chart(
             marker="o",
             color="w",
             markerfacecolor=c,
-            markersize=7,
+            markersize=6.5,
             label=lab,
         )
         for lab, c in (
@@ -130,10 +299,29 @@ def render_ndvi_ndmi_chart(
             ("轻度", _DROUGHT_MARKER_COLORS["mild"]),
             ("中度", _DROUGHT_MARKER_COLORS["moderate"]),
             ("重度", _DROUGHT_MARKER_COLORS["severe"]),
-            ("不可靠/季外", _DROUGHT_MARKER_COLORS["unreliable"]),
         )
     ]
-    ax.legend(handles + extra, labels + [h.get_label() for h in extra], loc="best", fontsize=7)
+    extra.append(
+        Line2D(
+            [0],
+            [0],
+            marker="o",
+            color="w",
+            markerfacecolor="none",
+            markeredgecolor="#bdbdbd",
+            markersize=6.5,
+            label="不可靠/非官方",
+        )
+    )
+    extra.append(Patch(facecolor="#e8f5e9", edgecolor="none", label="物候带（估计）"))
+    ax.legend(
+        handles + extra,
+        labels + [h.get_label() for h in extra],
+        loc="lower left",
+        fontsize=6.2,
+        ncol=3,
+        framealpha=0.9,
+    )
     fig.autofmt_xdate(rotation=30)
     fig.tight_layout()
     fig.savefig(out, bbox_inches="tight")
@@ -145,7 +333,7 @@ def render_s1_vv_chart(
     facts: dict[str, Any],
     out_path: Path | str,
 ) -> Path | None:
-    """Plot S1 VV over time colored by flood class; hlines at flood/watch thresholds."""
+    """Plot S1 VV; hlines at flood/watch thresholds -17.0 / -15.0."""
     flood = facts.get("flood") or {}
     scenes = list(flood.get("scenes") or [])
     points = [s for s in scenes if s.get("vv") is not None and s.get("date")]
@@ -159,10 +347,11 @@ def render_s1_vv_chart(
     xs = [datetime.fromisoformat(str(s["date"])[:10]) for s in points]
     ys = [float(s["vv"]) for s in points]
     colors = [
-        _FLOOD_MARKER_COLORS.get(str(s.get("class") or "dry"), "#757575") for s in points
+        _FLOOD_MARKER_COLORS.get(str(s.get("class") or "dry"), "#757575")
+        for s in points
     ]
 
-    fig, ax = plt.subplots(figsize=(7.2, 3.4), dpi=140)
+    fig, ax = plt.subplots(figsize=(7.4, 2.85), dpi=140)
     ax.plot(xs, ys, color="#90a4ae", linewidth=1.2, zorder=1)
     ax.scatter(xs, ys, c=colors, s=32, zorder=3, edgecolors="white", linewidths=0.4)
     ax.axhline(
@@ -184,12 +373,10 @@ def render_s1_vv_chart(
     label = win.get("label")
     if label:
         title = f"{title}（{label}）"
-    ax.set_title(title, fontsize=11)
+    ax.set_title(title, fontsize=10)
     ax.set_ylabel("VV (dB)")
     ax.set_xlabel("日期")
     ax.grid(True, alpha=0.25)
-    from matplotlib.lines import Line2D
-
     handles, labels = ax.get_legend_handles_labels()
     extra = [
         Line2D(
@@ -212,7 +399,7 @@ def render_s1_vv_chart(
         handles + extra,
         labels + [h.get_label() for h in extra],
         loc="best",
-        fontsize=7,
+        fontsize=6.5,
     )
     fig.autofmt_xdate(rotation=30)
     fig.tight_layout()

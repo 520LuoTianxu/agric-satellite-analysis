@@ -15,42 +15,62 @@ DEFAULT_BASE_URL = (
 )
 DEFAULT_MODEL = "qwen3.7-flash"
 
-SYSTEM_PROMPT = """你是资深农学与遥感分析助手，撰写面向农户与农技人员的中文「生育期长势分析报告」正文。
-只能基于用户提供的 JSON 事实与材料文本撰写；不得编造数值、日期、景数、等级或百分比。
+SYSTEM_PROMPT = """你是资深农学与遥感分析助手，撰写面向农户与农技人员的中文「生育期长势分析报告」解读。
+只能基于用户提供的 JSON 事实撰写；不得编造数值、日期、景数、等级、百分比或田间事实。
 
 硬性规则：
-1. 数值只能引用 facts 中已有的数字；缺失则写「数据不足」或「未提供」，不要猜测。
-2. 正文必须是正常农学报告文风：完整中文句子，不要像字段说明或日志。
-3. 严禁在散文中出现英文字段名 / JSON 键 / 程序变量，例如 flood_scene_count、drought_class、status=ok、detected、low 等。
-   状态请用中文表述：如「洪涝监测正常」「已检测到收获信号（低置信度）」「重度干旱」等。
-4. 不得在没有材料证据时发明灌溉、施肥、土壤质地或田间管理细节；可能原因必须能从 facts 直接支撑。
-5. 输出必须是合法 JSON，键为：
-   one_liner, summary, evidence_bullets, core_conclusion,
-   moisture_analysis, interpretation, causes_ranked,
-   recommendations, follow_up, timeline_notes。
-6. 字段分工（避免互相复读同一段话）：
-   - one_liner：一句话总括（≤40字），点出长势主结论。
-   - summary：2–4句背景与关键事实摘要，不要整段复制 one_liner / core_conclusion。
-   - evidence_bullets：字符串数组，每条引用具体事实（中文表述）。
-   - core_conclusion：核心结论（1–3句），侧重判断与风险，勿与 summary 逐句重复。
-   - moisture_analysis：干旱/洪涝水分证据解读。
-   - interpretation：综合长势分析（物候、曲线形态、同比等），不要再贴一遍 core_conclusion。
-   - causes_ranked：可能原因排序（字符串数组，仅基于事实）。
-   - recommendations：可执行管理建议（数组或分段文字）。
-   - follow_up：建议补充取证（字符串数组）。
-   - timeline_notes：对程序时间线的补充说明（可空字符串）。
-7. 程序已给出 counts / appendix / timeline 等事实；你只做分析，不重算、不发明数字。"""
+1. 程序拥有全部数字（NDVI/NDMI/EVI/MNDWI/VV/VH、日期、景数、等级、收获）。你只解读，不重算、不发明。
+2. 不得编造天气、播种、品种、土壤、产量、墒情、成熟度；缺失则写「未提供，需进一步确认」。
+3. 语气必须谨慎：使用 提示/可能/疑似/需进一步确认。禁止虚假因果。
+4. 不能仅凭 NDVI 推断产量损失或写「生物量积累达标」「生物量达标」；应写冠层绿度。
+5. 九月 NDVI 下降与干旱等级共现：只能写「成熟脱水与天气偏干可能同时存在」，缺少土壤/气象资料时不能定量。
+6. 收获：若程序置信度为低，必须写「疑似进入成熟后期或收获准备阶段」并强调需田间确认；禁止「立即收割」。
+7. 同比：只能写「峰值日期提前/推后 N 天」；禁止「生育进程提前一个月」或推断播种/积温。
+8. 严禁散文出现英文字段名/JSON 键（如 flood_scene_count、status=ok、detected、low）。
+9. 物候阶段为估计，不得写成实测播种日期。
+10. 输出必须是合法 JSON，键恰好为：
+    core_conclusion, synthesis, timeline_bullets, monthly_notes,
+    conclusions, factors_strong, factors_mid, factors_weak,
+    actions_now, actions_week, actions_next_season, evidence_gaps。
+11. 字段分工（禁止互相复读同一段）：
+    - core_conclusion：≤80字，一句核心判断（谨慎，引用程序事实）。
+    - synthesis：150–250字，综合回答以下6问：①当前冠层绿度如何？②是否提示干旱？③是否提示洪涝？④是否疑似成熟后期/收获准备？⑤与上年相比峰值日期差多少（只谈峰值日期）？⑥还缺哪些证据才能下更强结论？
+    - timeline_bullets：3–5条按月短句（6–9月），只解读程序时间线。
+    - monthly_notes：字符串数组，与 facts.timeline 月份对齐，写入表格「AI判读」列，每条≤40字。
+    - conclusions：3–4条综合结论（可呼应 program_conclusions，勿复述数字清单）。
+    - factors_strong / factors_mid / factors_weak：可能影响因素，按证据强度分三档（字符串数组）。证据不足档写「资料不足，不能认定…」。
+    - actions_now / actions_week / actions_next_season：现在 / 未来7天 / 下一季建议。收获相关必须用「疑似…需田间确认」，禁止立即收割。
+    - evidence_gaps：需要补充的证据（字符串数组）。
+12. 不要输出 one_liner / summary / evidence_bullets / 结论复述 等重复块。"""
 
-_AI_LIST_KEYS = ("evidence_bullets", "causes_ranked", "follow_up")
-_AI_STR_KEYS = (
-    "one_liner",
-    "summary",
-    "core_conclusion",
-    "moisture_analysis",
-    "interpretation",
-    "recommendations",
-    "timeline_notes",
+_AI_LIST_KEYS = (
+    "timeline_bullets",
+    "monthly_notes",
+    "conclusions",
+    "factors_strong",
+    "factors_mid",
+    "factors_weak",
+    "evidence_gaps",
 )
+_AI_STR_KEYS = (
+    "core_conclusion",
+    "synthesis",
+    "actions_now",
+    "actions_week",
+    "actions_next_season",
+)
+
+# Legacy keys still accepted as fallbacks when the model returns the old schema.
+_LEGACY_MAP = {
+    "one_liner": "core_conclusion",
+    "summary": "synthesis",
+    "interpretation": "synthesis",
+    "moisture_analysis": "synthesis",
+    "recommendations": "actions_now",
+    "follow_up": "evidence_gaps",
+    "causes_ranked": "factors_mid",
+    "timeline_notes": "timeline_bullets",
+}
 
 
 def bailian_configured() -> bool:
@@ -97,6 +117,17 @@ def _as_str_list(value: Any) -> list[str]:
         return [s] if s else []
     if isinstance(value, list):
         return [str(x).strip() for x in value if str(x).strip()]
+    if isinstance(value, dict):
+        # month -> note
+        out: list[str] = []
+        for k in sorted(value.keys(), key=lambda x: str(x)):
+            v = value.get(k)
+            if v is None:
+                continue
+            s = str(v).strip()
+            if s:
+                out.append(s if str(k) in s else f"{k} {s}")
+        return out
     return []
 
 
@@ -110,12 +141,33 @@ def _as_str_or_none(value: Any) -> str | None:
     return s or None
 
 
+def _clip(text: str | None, max_chars: int) -> str | None:
+    if not text:
+        return text
+    t = text.strip()
+    if len(t) <= max_chars:
+        return t
+    return t[: max_chars - 1] + "…"
+
+
 def _empty_ai_fields() -> dict[str, Any]:
     return {
+        "core_conclusion": None,
+        "synthesis": None,
+        "timeline_bullets": [],
+        "monthly_notes": [],
+        "conclusions": [],
+        "factors_strong": [],
+        "factors_mid": [],
+        "factors_weak": [],
+        "actions_now": None,
+        "actions_week": None,
+        "actions_next_season": None,
+        "evidence_gaps": [],
+        # kept so older callers/tests do not KeyError
         "one_liner": None,
         "summary": None,
         "evidence_bullets": [],
-        "core_conclusion": None,
         "moisture_analysis": None,
         "interpretation": None,
         "causes_ranked": [],
@@ -125,17 +177,41 @@ def _empty_ai_fields() -> dict[str, Any]:
     }
 
 
+def _merge_legacy(obj: dict[str, Any]) -> dict[str, Any]:
+    merged = dict(obj)
+    for old, new in _LEGACY_MAP.items():
+        if merged.get(new) in (None, "", []):
+            if obj.get(old) not in (None, "", []):
+                merged[new] = obj.get(old)
+    return merged
+
+
 def _normalize_ai(obj: dict[str, Any] | None) -> dict[str, Any]:
     if not obj:
         out = _empty_ai_fields()
         out["llm_configured"] = False
         out["error"] = "empty_response"
         return out
+    obj = _merge_legacy(obj)
     out = _empty_ai_fields()
     for k in _AI_STR_KEYS:
         out[k] = _as_str_or_none(obj.get(k))
     for k in _AI_LIST_KEYS:
         out[k] = _as_str_list(obj.get(k))
+    out["core_conclusion"] = _clip(out.get("core_conclusion"), 80)
+    # keep a little headroom over 250 for punctuation
+    if out.get("synthesis") and len(out["synthesis"]) > 280:
+        out["synthesis"] = _clip(out["synthesis"], 250)
+    # legacy mirrors for any leftover callers
+    out["one_liner"] = out.get("core_conclusion")
+    out["summary"] = out.get("synthesis")
+    out["interpretation"] = out.get("synthesis")
+    out["recommendations"] = out.get("actions_now")
+    out["follow_up"] = list(out.get("evidence_gaps") or [])
+    out["causes_ranked"] = list(out.get("factors_mid") or [])
+    out["timeline_notes"] = (
+        "\n".join(out.get("timeline_bullets") or []) or None
+    )
     out["llm_configured"] = True
     out["error"] = None
     return out
@@ -146,10 +222,11 @@ def missing_llm_sections() -> dict[str, Any]:
     out = _empty_ai_fields()
     out.update(
         {
-            "one_liner": "遥感事实已生成（AI 摘要未启用）",
+            "core_conclusion": "遥感事实已生成（AI 解读未启用）",
+            "synthesis": note,
+            "actions_now": "请配置 BAILIAN_API_KEY 后重新生成以获得 AI 解读与建议。",
+            "one_liner": "遥感事实已生成（AI 解读未启用）",
             "summary": note,
-            "core_conclusion": note,
-            "moisture_analysis": note,
             "interpretation": note,
             "recommendations": "请配置 BAILIAN_API_KEY 后重新生成以获得 AI 解读与建议。",
             "llm_configured": False,
@@ -209,7 +286,7 @@ def generate_season_narrative(
         )
         parsed = _extract_json(content)
         out = _normalize_ai(parsed)
-        if not out.get("summary") and not out.get("one_liner"):
+        if not out.get("core_conclusion") and not out.get("synthesis"):
             out["error"] = out.get("error") or "unparseable_response"
             out["raw_excerpt"] = str(content)[:500]
         return out
@@ -223,10 +300,10 @@ def generate_season_narrative(
         out = _empty_ai_fields()
         out.update(
             {
+                "core_conclusion": "遥感事实已生成（AI 调用失败）",
+                "synthesis": note,
                 "one_liner": "遥感事实已生成（AI 调用失败）",
                 "summary": note,
-                "core_conclusion": note,
-                "moisture_analysis": note,
                 "interpretation": note,
                 "recommendations": None,
                 "llm_configured": True,

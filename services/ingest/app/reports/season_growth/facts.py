@@ -385,6 +385,9 @@ def _prior_year_comparison(
         return None
     if len(ndvi) < 2:
         return None
+    official_count = None
+    if is_agri and land_id:
+        official_count = sum(1 for r in rows if r.get("official"))
     return {
         "start_date": prior_start.isoformat(),
         "end_date": prior_end.isoformat(),
@@ -393,6 +396,7 @@ def _prior_year_comparison(
         else None,
         "ndvi_peak": _peak(ndvi),
         "point_count": len(ndvi),
+        "official_count": official_count,
     }
 
 
@@ -514,8 +518,12 @@ def _build_timeline(
     s1_rows: list[dict[str, Any]],
     drought: dict[str, Any],
     flood: dict[str, Any],
+    ndvi_ts: list[dict[str, Any]] | None = None,
+    crops: list[Any] | None = None,
+    fallback_crop: str | None = None,
+    peak_month: int | None = None,
 ) -> list[dict[str, Any]]:
-    """Month rows in window: program scene / drought / flood counts only."""
+    """Month rows: program scene / drought / flood / estimated phenology."""
     months: list[tuple[int, int]] = []
     y, m = start.year, start.month
     while (y, m) <= (end.year, end.month):
@@ -529,12 +537,29 @@ def _build_timeline(
         str(d.get("date")): str(d.get("class"))
         for d in (drought.get("days") or [])
     }
+    class_by_date = {
+        str(sc.get("date")): str(sc.get("class") or "")
+        for sc in (drought.get("scene_classes") or drought.get("classified") or [])
+    }
     flood_scenes = list(flood.get("scenes") or [])
+    ndvi_ts = list(ndvi_ts or [])
 
     rows: list[dict[str, Any]] = []
     for yy, mm in months:
         prefix = f"{yy:04d}-{mm:02d}"
         s2_n = sum(1 for r in s2_rows if str(r.get("date", "")).startswith(prefix))
+        official_n = sum(
+            1
+            for r in s2_rows
+            if str(r.get("date", "")).startswith(prefix) and r.get("official")
+        )
+        if not official_n and ndvi_ts:
+            official_n = sum(
+                1
+                for p in ndvi_ts
+                if str(p.get("date", "")).startswith(prefix)
+                and p.get("official") is not False
+            )
         s1_n = sum(1 for r in s1_rows if str(r.get("date", "")).startswith(prefix))
         drought_n = sum(1 for d in drought_days if d.startswith(prefix))
         flood_n = sum(
@@ -548,17 +573,648 @@ def _build_timeline(
             for sc in flood_scenes
             if str(sc.get("date", "")).startswith(prefix) and sc.get("class") == "watch"
         )
+        month_ndvi = [
+            _num(p.get("value"))
+            for p in ndvi_ts
+            if str(p.get("date", "")).startswith(prefix)
+            and p.get("official") is not False
+            and _num(p.get("value")) is not None
+        ]
+        month_ndvi_vals = [v for v in month_ndvi if v is not None]
+        ndvi_mean = (
+            round(sum(month_ndvi_vals) / len(month_ndvi_vals), 4)
+            if month_ndvi_vals
+            else None
+        )
+        ndvi_max = round(max(month_ndvi_vals), 4) if month_ndvi_vals else None
+        month_classes = [
+            class_by_date[d]
+            for d in class_by_date
+            if d.startswith(prefix)
+        ]
+        month_drought_counts: dict[str, int] = {}
+        for c in month_classes:
+            month_drought_counts[c] = month_drought_counts.get(c, 0) + 1
+        if month_ndvi_vals:
+            s2_growth = (
+                f"官方/可用{official_n or len(month_ndvi_vals)}景，"
+                f"NDVI均{_fmt_idx(ndvi_mean, 3)}，"
+                f"最高{_fmt_idx(ndvi_max, 3)}"
+            )
+        else:
+            s2_growth = f"S2 {s2_n} 景，可用绿度点不足"
+        moisture = format_drought_counts_inline(month_drought_counts)
+        if flood_n:
+            s1_flood = f"洪涝{flood_n}" + (f" / 关注{watch_n}" if watch_n else "")
+        elif watch_n:
+            s1_flood = f"关注{watch_n} / 未检出洪涝"
+        elif s1_n:
+            s1_flood = f"未检出洪涝（{s1_n}景）"
+        else:
+            s1_flood = "无S1"
         rows.append(
             {
                 "month": prefix,
+                "period_label": f"{mm}月",
+                "crop_stage_estimate": phenology_stage_estimate(
+                    crops, mm, peak_month=peak_month, fallback_crop=fallback_crop
+                ),
+                "s2_growth": s2_growth,
+                "moisture": moisture,
+                "s1_flood": s1_flood,
                 "s2_count": s2_n,
+                "s2_official_count": official_n,
                 "s1_count": s1_n,
                 "drought_days": drought_n,
                 "flood_count": flood_n,
                 "watch_count": watch_n,
+                "ndvi_mean": ndvi_mean,
+                "ndvi_max": ndvi_max,
             }
         )
     return rows
+
+
+
+# --- layout v2: program-owned status / confidence / phenology / YoY ---
+
+CONF_CN = {"high": "高", "medium": "中", "low": "低"}
+
+# Typical calendar stages. Always suffixed 估计; NEVER a real sowing date.
+_CROP_STAGE_BY_MONTH: dict[str, dict[int, str]] = {
+    "corn": {
+        5: "出苗（估计）",
+        6: "苗期–拔节（估计）",
+        7: "拔节–抽雄/吐丝（估计）",
+        8: "灌浆（估计）",
+        9: "成熟（估计）",
+        10: "收获后残茬（估计）",
+    },
+    "wheat": {
+        3: "返青–拔节（估计）",
+        4: "拔节–抽穗（估计）",
+        5: "抽穗–灌浆（估计）",
+        6: "成熟（估计）",
+        7: "收获后（估计）",
+    },
+    "rice": {
+        5: "移栽–返青（估计）",
+        6: "返青–分蘖（估计）",
+        7: "拔节–抽穗（估计）",
+        8: "灌浆（估计）",
+        9: "成熟（估计）",
+    },
+    "soybean": {
+        6: "苗期–分枝（估计）",
+        7: "开花–结荚（估计）",
+        8: "鼓粒（估计）",
+        9: "成熟（估计）",
+    },
+}
+
+_CROP_ALIASES = {
+    "玉米": "corn",
+    "corn": "corn",
+    "maize": "corn",
+    "summer_corn": "corn",
+    "summer-corn": "corn",
+    "夏玉米": "corn",
+    "春玉米": "corn",
+    "wheat": "wheat",
+    "小麦": "wheat",
+    "冬小麦": "wheat",
+    "rice": "rice",
+    "水稻": "rice",
+    "soybean": "soybean",
+    "大豆": "soybean",
+}
+
+
+def normalize_crop_key(crops: list[Any] | None, fallback: str | None = None) -> str:
+    tokens: list[str] = []
+    for c in crops or []:
+        tokens.append(str(c).strip())
+    if fallback:
+        tokens.append(str(fallback).strip())
+    for t in tokens:
+        key = _CROP_ALIASES.get(t) or _CROP_ALIASES.get(t.lower())
+        if key:
+            return key
+        low = t.lower()
+        for alias, mapped in _CROP_ALIASES.items():
+            if alias in t or alias in low:
+                return mapped
+    return "generic"
+
+
+def phenology_stage_estimate(
+    crops: list[Any] | None,
+    month: int,
+    *,
+    peak_month: int | None = None,
+    fallback_crop: str | None = None,
+) -> str:
+    """Calendar-typical stage label. Always 估计; no sowing date."""
+    crop = normalize_crop_key(crops, fallback_crop)
+    table = _CROP_STAGE_BY_MONTH.get(crop) or {}
+    if month in table:
+        return table[month]
+    if peak_month:
+        if month < peak_month:
+            return "营养生长（估计）"
+        if month == peak_month:
+            return "旺盛生长期（估计）"
+        return "成熟/衰老（估计）"
+    return "生育阶段（估计）"
+
+
+def phenology_bands(
+    start: date,
+    end: date,
+    crops: list[Any] | None,
+    *,
+    peak_month: int | None = None,
+    fallback_crop: str | None = None,
+) -> list[dict[str, Any]]:
+    """Month bands for charts / timeline. Labels include 估计."""
+    bands: list[dict[str, Any]] = []
+    y, m = start.year, start.month
+    while (y, m) <= (end.year, end.month):
+        last_day = 28
+        try:
+            last_day = (date(y, m + 1, 1) - timedelta(days=1)).day if m < 12 else 31
+        except ValueError:
+            last_day = 31
+        band_start = date(y, m, 1)
+        band_end = date(y, m, last_day)
+        if band_start < start:
+            band_start = start
+        if band_end > end:
+            band_end = end
+        bands.append(
+            {
+                "start": band_start.isoformat(),
+                "end": band_end.isoformat(),
+                "month": m,
+                "label": phenology_stage_estimate(
+                    crops, m, peak_month=peak_month, fallback_crop=fallback_crop
+                ),
+            }
+        )
+        if m == 12:
+            y, m = y + 1, 1
+        else:
+            m += 1
+    return bands
+
+
+def _conf_cn(level: str) -> str:
+    return CONF_CN.get(level, level)
+
+
+def compute_confidence(
+    *,
+    official_s2: int,
+    peak_exists: bool,
+    drought_counts: dict[str, Any] | None,
+    s1_count: int,
+    flood_scene_count: int,
+    harvest: dict[str, Any] | None,
+) -> dict[str, Any]:
+    """Program RULES for 高/中/低 — never an AI percentage."""
+    counts = drought_counts or {}
+    unreliable = int(counts.get("unreliable") or 0)
+    official = int(official_s2 or 0)
+
+    if official >= 15 and peak_exists:
+        growth_level = "high"
+        growth_reason = f"官方可用景{official}且存在NDVI峰值"
+    elif official >= 8 and peak_exists:
+        growth_level = "medium"
+        growth_reason = f"官方可用景{official}，峰值可识别但覆盖一般"
+    else:
+        growth_level = "low"
+        growth_reason = f"官方可用景{official}不足或缺少峰值"
+
+    if official < 4:
+        drought_level = "low"
+        drought_reason = f"官方可用景{official}过少，干旱判定不稳定"
+    elif official < 8 or unreliable >= official:
+        drought_level = "medium"
+        drought_reason = (
+            f"不可靠景{unreliable}较多或官方可用景{official}偏少，干旱置信度取中"
+        )
+    elif official >= 15:
+        drought_level = "high"
+        drought_reason = f"官方可用景{official}充足，干旱等级仅统计官方景"
+    else:
+        drought_level = "medium"
+        drought_reason = f"官方可用景{official}，干旱判定取中"
+
+    flood_n = int(flood_scene_count or 0)
+    s1_n = int(s1_count or 0)
+    if s1_n >= 8 and flood_n == 0:
+        flood_level = "high"
+        flood_reason = f"S1景{s1_n}且未检出洪涝，判定一致"
+    elif s1_n >= 8:
+        flood_level = "high"
+        flood_reason = f"S1景{s1_n}，洪涝检出{flood_n}景且序列可对照"
+    elif s1_n >= 4:
+        flood_level = "medium"
+        flood_reason = f"S1景{s1_n}，洪涝序列覆盖一般"
+    else:
+        flood_level = "low"
+        flood_reason = f"S1景{s1_n}不足，洪涝判定不稳定"
+
+    h = harvest or {}
+    h_conf = str(h.get("confidence") or "").lower()
+    h_status = str(h.get("status") or "")
+    if h_conf == "low" or h_status in (
+        "",
+        "uncertain",
+        "no_growth",
+        "no_data",
+        "not_detected",
+    ):
+        harvest_level = "low"
+        harvest_reason = "程序收获置信度为低，或未形成稳定检测"
+    elif h_conf == "high":
+        harvest_level = "high"
+        harvest_reason = "程序收获置信度为高"
+    elif h_conf == "medium":
+        harvest_level = "medium"
+        harvest_reason = "程序收获置信度为中"
+    else:
+        harvest_level = "low"
+        harvest_reason = "程序未给出中/高收获置信度，按低处理"
+
+    items = {
+        "growth": {
+            "key": "growth",
+            "label": "长势",
+            "level": growth_level,
+            "level_cn": _conf_cn(growth_level),
+            "reason": growth_reason,
+        },
+        "drought": {
+            "key": "drought",
+            "label": "干旱",
+            "level": drought_level,
+            "level_cn": _conf_cn(drought_level),
+            "reason": drought_reason,
+        },
+        "flood": {
+            "key": "flood",
+            "label": "洪涝",
+            "level": flood_level,
+            "level_cn": _conf_cn(flood_level),
+            "reason": flood_reason,
+        },
+        "harvest": {
+            "key": "harvest",
+            "label": "收获",
+            "level": harvest_level,
+            "level_cn": _conf_cn(harvest_level),
+            "reason": harvest_reason,
+        },
+    }
+    return {
+        "growth": items["growth"],
+        "drought": items["drought"],
+        "flood": items["flood"],
+        "harvest": items["harvest"],
+        "items": [items["growth"], items["drought"], items["flood"], items["harvest"]],
+    }
+
+
+def _latest_official_ndvi(series: list[dict[str, Any]]) -> dict[str, Any] | None:
+    official = [p for p in series if p.get("official") is not False]
+    if official:
+        return official[-1]
+    return series[-1] if series else None
+
+
+def compute_status_cards(
+    *,
+    ndvi: dict[str, Any],
+    drought: dict[str, Any],
+    flood: dict[str, Any],
+    harvest: dict[str, Any],
+    scenes: dict[str, Any],
+    confidence: dict[str, Any],
+) -> list[dict[str, Any]]:
+    """Cover cards: status text from program numbers + RULES confidence."""
+    peak = ndvi.get("peak") or {}
+    series = list(ndvi.get("series") or [])
+    latest = _latest_official_ndvi(series) or ndvi.get("latest") or {}
+    peak_v = _num(peak.get("value"))
+    latest_v = _num(latest.get("value"))
+    if peak_v and latest_v is not None and peak_v > 0:
+        ratio = latest_v / peak_v
+        if ratio < 0.70:
+            growth_value = "冠层绿度较峰值回落"
+        elif latest_v >= 0.60:
+            growth_value = "冠层绿度较高"
+        elif latest_v >= 0.35:
+            growth_value = "冠层绿度中等"
+        else:
+            growth_value = "冠层绿度偏低"
+    elif latest_v is not None:
+        growth_value = "冠层绿度可观测"
+    else:
+        growth_value = "长势数据不足"
+    growth_detail = (
+        f"峰值{_fmt_idx(peak.get('value'))} @ {peak.get('date') or '—'}；"
+        f"最新{_fmt_idx(latest.get('value'))} @ {latest.get('date') or '—'}"
+    )
+
+    counts = drought.get("counts") or {}
+    drought_n = int(drought.get("drought_scene_count") or 0)
+    severe = int(counts.get("severe") or 0)
+    if drought_n <= 0:
+        drought_value = "官方干旱景未检出"
+    elif severe >= 3:
+        drought_value = "提示偏高"
+    else:
+        drought_value = "提示存在干旱景"
+    drought_detail = format_drought_counts_inline(counts)
+
+    flood_n = int(flood.get("flood_scene_count") or 0)
+    s1_n = int(scenes.get("s1_count") or flood.get("scene_count") or 0)
+    if flood.get("status") == "no_s1_data":
+        flood_value = "无S1数据"
+        flood_detail = "窗口内无 Sentinel-1，无法判定洪涝"
+    elif flood_n <= 0:
+        flood_value = "未检出洪涝"
+        flood_detail = f"S1 {s1_n} 景，洪涝 0"
+    else:
+        flood_value = "提示存在洪涝景"
+        flood_detail = f"S1 {s1_n} 景，洪涝 {flood_n}"
+
+    h_status = str(harvest.get("status") or "")
+    h_conf = str(harvest.get("confidence") or "low")
+    if h_status == "detected":
+        harvest_value = "疑似进入成熟后期或收获准备阶段"
+        date_s = harvest.get("harvest_date") or "—"
+        harvest_detail = f"程序日期 {date_s}，需田间确认"
+    elif h_status in ("uncertain", "no_growth"):
+        harvest_value = "未形成稳定收获判定"
+        harvest_detail = f"程序状态不确定（置信度{_conf_cn(h_conf)}）"
+    else:
+        harvest_value = "未检出收获信号"
+        harvest_detail = "窗口内无稳定收获检测"
+
+    conf_g = confidence.get("growth") or {}
+    conf_d = confidence.get("drought") or {}
+    conf_f = confidence.get("flood") or {}
+    conf_h = confidence.get("harvest") or {}
+    return [
+        {
+            "key": "growth",
+            "title": "当前长势",
+            "value": growth_value,
+            "detail": growth_detail,
+            "confidence": conf_g.get("level_cn") or "低",
+            "confidence_level": conf_g.get("level") or "low",
+        },
+        {
+            "key": "drought",
+            "title": "干旱风险",
+            "value": drought_value,
+            "detail": drought_detail,
+            "confidence": conf_d.get("level_cn") or "中",
+            "confidence_level": conf_d.get("level") or "medium",
+        },
+        {
+            "key": "flood",
+            "title": "洪涝风险",
+            "value": flood_value,
+            "detail": flood_detail,
+            "confidence": conf_f.get("level_cn") or "低",
+            "confidence_level": conf_f.get("level") or "low",
+        },
+        {
+            "key": "harvest",
+            "title": "收获状态",
+            "value": harvest_value,
+            "detail": harvest_detail,
+            "confidence": conf_h.get("level_cn") or "低",
+            "confidence_level": conf_h.get("level") or "low",
+        },
+    ]
+
+
+def format_drought_counts_inline(counts: dict[str, Any] | None) -> str:
+    if not counts:
+        return "—"
+    order = (
+        ("severe", "重度"),
+        ("moderate", "中度"),
+        ("mild", "轻度"),
+        ("normal", "正常"),
+        ("unreliable", "不可靠"),
+        ("out_of_season", "季外"),
+    )
+    parts = []
+    for key, label in order:
+        n = int(counts.get(key) or 0)
+        if n > 0:
+            parts.append(f"{label}{n}")
+    return " / ".join(parts) if parts else "—"
+
+
+def format_flood_counts_inline(counts: dict[str, Any] | None) -> str:
+    if not counts:
+        return "—"
+    order = (
+        ("flood_severe", "洪涝(重)"),
+        ("flood_moderate", "洪涝"),
+        ("watch", "关注"),
+        ("dry", "正常"),
+        ("unknown", "未定"),
+    )
+    parts = []
+    for key, label in order:
+        n = int(counts.get(key) or 0)
+        if n > 0:
+            parts.append(f"{label}{n}")
+    return " / ".join(parts) if parts else "—"
+
+
+def _fmt_idx(v: Any, digits: int = 3) -> str:
+    n = _num(v)
+    if n is None:
+        return "—"
+    return f"{n:.{digits}f}"
+
+
+def compute_yoy(
+    ndvi: dict[str, Any],
+    prior: dict[str, Any] | None,
+    scenes: dict[str, Any],
+) -> dict[str, Any]:
+    """Program-only year-over-year numbers. AI may only describe peak-date shift."""
+    peak = ndvi.get("peak") or {}
+    prior = prior or {}
+    prior_peak = prior.get("ndvi_peak") or {}
+    this_date = _parse_date(peak.get("date"))
+    prior_date = _parse_date(prior_peak.get("date"))
+    shift: dict[str, Any] | None = None
+    if this_date and prior_date:
+        delta = this_date.timetuple().tm_yday - prior_date.timetuple().tm_yday
+        if delta < 0:
+            shift = {
+                "days": abs(delta),
+                "direction": "提前",
+                "label": f"峰值日期提前{abs(delta)}天",
+            }
+        elif delta > 0:
+            shift = {
+                "days": delta,
+                "direction": "推后",
+                "label": f"峰值日期推后{delta}天",
+            }
+        else:
+            shift = {"days": 0, "direction": "相同", "label": "峰值日期相同"}
+    return {
+        "this_peak_date": peak.get("date"),
+        "this_peak_value": peak.get("value"),
+        "this_ndvi_mean": ndvi.get("mean"),
+        "this_point_count": ndvi.get("point_count"),
+        "this_official_count": scenes.get("s2_official_count"),
+        "prior_start": prior.get("start_date"),
+        "prior_end": prior.get("end_date"),
+        "prior_peak_date": prior_peak.get("date"),
+        "prior_peak_value": prior_peak.get("value"),
+        "prior_ndvi_mean": prior.get("ndvi_mean"),
+        "prior_point_count": prior.get("point_count"),
+        "prior_official_count": prior.get("official_count"),
+        "peak_date_shift": shift,
+        "available": bool(this_date and prior_date),
+    }
+
+
+def compute_evidence_cards(
+    *,
+    ndvi: dict[str, Any],
+    drought: dict[str, Any],
+    flood: dict[str, Any],
+    harvest: dict[str, Any],
+    scenes: dict[str, Any],
+    yoy: dict[str, Any],
+) -> list[dict[str, str]]:
+    peak = ndvi.get("peak") or {}
+    latest = ndvi.get("latest") or {}
+    growth = (
+        f"官方可用景{scenes.get('s2_official_count', '—')} / 总{scenes.get('s2_count', '—')}；"
+        f"NDVI峰值{_fmt_idx(peak.get('value'), 4)} @ {peak.get('date') or '—'}；"
+        f"最新{_fmt_idx(latest.get('value'), 4)} @ {latest.get('date') or '—'}；"
+        f"均值{_fmt_idx(ndvi.get('mean'), 4)}"
+    )
+    moisture = (
+        f"官方干旱景{drought.get('drought_scene_count', 0)}；"
+        f"{format_drought_counts_inline(drought.get('counts'))}"
+    )
+    flood_txt = (
+        f"S1 {scenes.get('s1_count', 0)} 景；"
+        f"洪涝{flood.get('flood_scene_count', 0)}；"
+        f"{format_flood_counts_inline(flood.get('counts'))}；"
+        f"VV中位数{_fmt_idx(flood.get('vv_median'), 3)} dB"
+    )
+    shift = (yoy.get("peak_date_shift") or {}).get("label") or "无上年峰值对比"
+    h_status = harvest.get("status")
+    if h_status == "detected":
+        pheno = (
+            f"峰值日期{peak.get('date') or '—'}；{shift}；"
+            f"收获信号{harvest.get('harvest_date') or '—'}（需田间确认）。"
+            "物候阶段为估计，非实测播种。"
+        )
+    else:
+        pheno = (
+            f"峰值日期{peak.get('date') or '—'}；{shift}；"
+            "未形成稳定收获判定。物候阶段为估计，非实测播种。"
+        )
+    return [
+        {"title": "长势", "body": growth},
+        {"title": "水分", "body": moisture},
+        {"title": "洪涝", "body": flood_txt},
+        {"title": "物候", "body": pheno},
+    ]
+
+
+def program_core_conclusion(
+    *,
+    status_cards: list[dict[str, Any]],
+    yoy: dict[str, Any],
+    harvest: dict[str, Any],
+) -> str:
+    """≤80字 cautious one-liner from program numbers only."""
+    g = next((c for c in status_cards if c["key"] == "growth"), {})
+    d = next((c for c in status_cards if c["key"] == "drought"), {})
+    f = next((c for c in status_cards if c["key"] == "flood"), {})
+    shift = (yoy.get("peak_date_shift") or {}).get("label")
+    parts = [g.get("value") or "长势可观测", d.get("value") or "", f.get("value") or ""]
+    if harvest.get("status") == "detected":
+        parts.append("疑似进入成熟后期或收获准备阶段")
+    if shift:
+        parts.append(shift)
+    text = "，".join(p for p in parts if p)
+    if len(text) > 80:
+        text = text[:79] + "…"
+    return text
+
+
+def program_conclusions(
+    *,
+    scenes: dict[str, Any],
+    ndvi: dict[str, Any],
+    drought: dict[str, Any],
+    flood: dict[str, Any],
+    harvest: dict[str, Any],
+    yoy: dict[str, Any],
+) -> list[str]:
+    peak = ndvi.get("peak") or {}
+    latest = ndvi.get("latest") or {}
+    items = [
+        (
+            f"官方可用景{scenes.get('s2_official_count', '—')}，"
+            f"NDVI峰值{_fmt_idx(peak.get('value'), 4)}（{peak.get('date') or '—'}），"
+            f"最新{_fmt_idx(latest.get('value'), 4)}（{latest.get('date') or '—'}），"
+            "反映冠层绿度变化，不能据此推断产量。"
+        ),
+        (
+            f"干旱分级（官方参与判定）："
+            f"{format_drought_counts_inline(drought.get('counts'))}。"
+            "九月绿度下降与干旱等级共现时，提示成熟脱水与天气偏干可能同时存在，"
+            "缺少土壤/气象资料时不能定量区分。"
+        ),
+        (
+            f"洪涝：S1 {scenes.get('s1_count', 0)} 景，"
+            f"{format_flood_counts_inline(flood.get('counts'))}。"
+        ),
+    ]
+    if harvest.get("status") == "detected":
+        items.append(
+            f"收获信号{harvest.get('harvest_date') or '—'}，"
+            f"程序置信度{_conf_cn(str(harvest.get('confidence') or 'low'))}，"
+            "疑似进入成熟后期或收获准备阶段，需田间确认，不得作为立即收割依据。"
+        )
+    else:
+        items.append("窗口内未形成稳定收获判定，收获安排需结合田间确认。")
+    shift = (yoy.get("peak_date_shift") or {}).get("label")
+    if shift:
+        items[0] = items[0] + f" 与上年相比仅能说明{shift}，不能推断生育进程整体提前。"
+    return items[:4]
+
+
+FOOTER_DISCLAIMER = (
+    "声明：本报告全部数值（NDVI/NDMI/EVI/MNDWI、VV/VH、日期、景数、等级、收获信号）"
+    "由程序计算；AI 仅作解读，不得编造天气、播种、品种、土壤、产量、墒情或成熟事实。"
+    "干旱、洪涝与收获等判断为提示/可能/疑似结论，需进一步田间确认。"
+    "不能仅凭 NDVI 推断产量损失；低置信度收获信号不得作为立即收割依据。"
+    "九月绿度下降与干旱等级共现时，提示成熟脱水与天气偏干可能同时存在，"
+    "在缺少土壤与气象资料时不能定量区分。物候阶段为估计，不代表实测播种日期。"
+)
 
 
 def build_season_facts(
@@ -746,13 +1402,97 @@ def build_season_facts(
                 }
             )
     s1_appendix = _build_s1_appendix(flood)
+    peak_month = None
+    if peak and peak.get("date"):
+        pd = _parse_date(peak.get("date"))
+        peak_month = pd.month if pd else None
     timeline = _build_timeline(
         start=start,
         end=end,
-        s2_rows=s2 if s2 else [{"date": p["date"]} for p in ndvi_ts],
+        s2_rows=s2 if s2 else [{"date": p["date"], "official": True} for p in ndvi_ts],
         s1_rows=s1,
         drought=drought,
         flood=flood,
+        ndvi_ts=ndvi_ts,
+        crops=window.get("crops"),
+        fallback_crop=field_meta.get("crop_type"),
+        peak_month=peak_month,
+    )
+
+    confidence = compute_confidence(
+        official_s2=len(official_s2),
+        peak_exists=bool(peak),
+        drought_counts=drought.get("counts"),
+        s1_count=len(s1),
+        flood_scene_count=int(flood.get("flood_scene_count") or 0),
+        harvest=harvest_dict,
+    )
+    status_cards = compute_status_cards(
+        ndvi={
+            "series": ndvi_ts,
+            "mean": round(_series_mean(ndvi_ts), 4) if _series_mean(ndvi_ts) is not None else None,
+            "peak": peak,
+            "latest": latest,
+            "point_count": len(ndvi_ts),
+        },
+        drought=drought,
+        flood=flood,
+        harvest=harvest_dict,
+        scenes={
+            "s2_count": len(s2) if s2 else len(ndvi_ts),
+            "s1_count": len(s1),
+            "s2_official_count": len(official_s2),
+            "s2_clear_count": len(clear_s2),
+        },
+        confidence=confidence,
+    )
+    yoy = compute_yoy(
+        {
+            "peak": peak,
+            "mean": round(_series_mean(ndvi_ts), 4) if _series_mean(ndvi_ts) is not None else None,
+            "point_count": len(ndvi_ts),
+        },
+        prior,
+        {
+            "s2_official_count": len(official_s2),
+        },
+    )
+    evidence_cards = compute_evidence_cards(
+        ndvi={
+            "peak": peak,
+            "latest": latest,
+            "mean": round(_series_mean(ndvi_ts), 4) if _series_mean(ndvi_ts) is not None else None,
+        },
+        drought=drought,
+        flood=flood,
+        harvest=harvest_dict,
+        scenes={
+            "s2_count": len(s2) if s2 else len(ndvi_ts),
+            "s1_count": len(s1),
+            "s2_official_count": len(official_s2),
+        },
+        yoy=yoy,
+    )
+    conclusions = program_conclusions(
+        scenes={
+            "s2_official_count": len(official_s2),
+            "s1_count": len(s1),
+        },
+        ndvi={"peak": peak, "latest": latest},
+        drought=drought,
+        flood=flood,
+        harvest=harvest_dict,
+        yoy=yoy,
+    )
+    core_line = program_core_conclusion(
+        status_cards=status_cards, yoy=yoy, harvest=harvest_dict
+    )
+    phenology = phenology_bands(
+        start,
+        end,
+        window.get("crops"),
+        peak_month=peak_month,
+        fallback_crop=field_meta.get("crop_type"),
     )
 
     facts: dict[str, Any] = {
@@ -790,6 +1530,14 @@ def build_season_facts(
         "timeline": timeline,
         "s2_appendix": s2_appendix,
         "s1_appendix": s1_appendix,
+        "confidence": confidence,
+        "status_cards": status_cards,
+        "evidence_cards": evidence_cards,
+        "yoy": yoy,
+        "phenology_estimate": phenology,
+        "program_core_conclusion": core_line,
+        "program_conclusions": conclusions,
+        "disclaimer": FOOTER_DISCLAIMER,
     }
     return facts
 
@@ -890,6 +1638,12 @@ def facts_for_llm(
         s2_trunc = False
     s1_app = list(facts.get("s1_appendix") or [])
     s1_app_out = s1_app[:max_s1_appendix]
+    harvest_out = harvest
+    if isinstance(harvest_out, dict) and harvest_out.get("status") == "detected":
+        harvest_out = dict(harvest_out)
+        harvest_out["wording_hint"] = (
+            "疑似进入成熟后期或收获准备阶段（需田间确认，不得写立即收割）"
+        )
     return {
         "field": facts.get("field"),
         "window": facts.get("window"),
@@ -900,7 +1654,7 @@ def facts_for_llm(
         "ndmi": ndmi,
         "drought": drought,
         "flood": flood,
-        "harvest": harvest,
+        "harvest": harvest_out,
         "prior_year": prior,
         "methodology": facts.get("methodology"),
         "timeline": facts.get("timeline") or [],
@@ -908,4 +1662,20 @@ def facts_for_llm(
         "s2_appendix_truncated": s2_trunc,
         "s1_appendix": s1_app_out,
         "s1_appendix_truncated": len(s1_app) > max_s1_appendix,
+        "confidence": facts.get("confidence"),
+        "status_cards": facts.get("status_cards"),
+        "evidence_cards": facts.get("evidence_cards"),
+        "yoy": facts.get("yoy"),
+        "phenology_estimate": facts.get("phenology_estimate"),
+        "program_core_conclusion": facts.get("program_core_conclusion"),
+        "program_conclusions": facts.get("program_conclusions"),
+        "disclaimer": facts.get("disclaimer"),
+        "ai_rules": {
+            "core_conclusion_max_chars": 80,
+            "synthesis_chars": "150-250",
+            "yoy_only": "只能写峰值日期提前/推后，禁止写生育进程提前一个月",
+            "harvest_wording": "疑似进入成熟后期或收获准备阶段，需田间确认",
+            "september_drought": "绿度下降与干旱共现=成熟脱水+天气偏干可能同时存在，不能定量",
+            "ban": ["生物量积累达标", "生物量达标", "立即收割", "生育进程提前一个月"],
+        },
     }

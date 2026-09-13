@@ -93,6 +93,8 @@ def generate_season_growth_pdf(
         "harvest": facts.get("harvest"),
         "drought_scene_count": (facts.get("drought") or {}).get("drought_scene_count"),
         "flood_status": (facts.get("flood") or {}).get("status"),
+        "confidence": facts.get("confidence"),
+        "status_cards": facts.get("status_cards"),
         "window": facts.get("window"),
         "materials": materials_meta,
         "field_name": field_name,

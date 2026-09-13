@@ -1,4 +1,4 @@
-"""PDF render smoke test (no LLM, minimal + richer facts)."""
+"""PDF render smoke test (no LLM, v2 layout)."""
 
 from __future__ import annotations
 
@@ -6,7 +6,17 @@ import tempfile
 import unittest
 from pathlib import Path
 
+from app.reports.season_growth.facts import (
+    FOOTER_DISCLAIMER,
+    compute_confidence,
+    compute_evidence_cards,
+    compute_status_cards,
+    compute_yoy,
+    program_conclusions,
+    program_core_conclusion,
+)
 from app.reports.season_growth.pdf_render import (
+    filter_s1_appendix_rows,
     filter_s2_appendix_rows,
     format_drought_counts,
     format_flood_counts,
@@ -18,66 +28,112 @@ from app.reports.season_growth.pdf_render import (
 
 
 def _rich_facts() -> dict:
+    ndvi = {
+        "mean": 0.55,
+        "peak": {"date": "2026-08-05", "value": 0.7},
+        "latest": {"date": "2026-09-05", "value": 0.4},
+        "point_count": 2,
+        "series": [
+            {"date": "2026-06-05", "value": 0.32, "official": True},
+            {"date": "2026-08-05", "value": 0.7, "official": True},
+            {"date": "2026-09-05", "value": 0.4, "official": True},
+        ],
+    }
+    drought = {
+        "drought_scene_count": 1,
+        "counts": {"normal": 6, "mild": 1, "unreliable": 2},
+        "days": [{"date": "2026-08-20", "class": "mild"}],
+        "scene_classes": [
+            {"date": "2026-06-05", "class": "normal"},
+            {"date": "2026-08-20", "class": "mild"},
+        ],
+    }
+    flood = {
+        "status": "ok",
+        "vv_median": -12.0,
+        "flood_scene_count": 0,
+        "counts": {"dry": 4, "watch": 0},
+        "scenes": [
+            {
+                "date": "2026-07-01",
+                "vv": -12.0,
+                "vh": -18.0,
+                "relative_orbit": 10,
+                "class": "dry",
+            }
+        ],
+        "note": None,
+    }
+    harvest = {
+        "status": "detected",
+        "harvest_date": "2026-09-05",
+        "confidence": "low",
+    }
+    scenes = {
+        "s2_count": 18,
+        "s1_count": 8,
+        "s2_official_count": 16,
+        "s2_clear_count": 14,
+    }
+    confidence = compute_confidence(
+        official_s2=16,
+        peak_exists=True,
+        drought_counts=drought["counts"],
+        s1_count=8,
+        flood_scene_count=0,
+        harvest=harvest,
+    )
+    status_cards = compute_status_cards(
+        ndvi=ndvi,
+        drought=drought,
+        flood=flood,
+        harvest=harvest,
+        scenes=scenes,
+        confidence=confidence,
+    )
+    yoy = compute_yoy(
+        ndvi,
+        {
+            "start_date": "2025-06-01",
+            "end_date": "2025-09-30",
+            "ndvi_mean": 0.24,
+            "ndvi_peak": {"date": "2025-08-11", "value": 0.85},
+            "point_count": 20,
+            "official_count": 12,
+        },
+        scenes,
+    )
+    evidence_cards = compute_evidence_cards(
+        ndvi=ndvi, drought=drought, flood=flood, harvest=harvest, scenes=scenes, yoy=yoy
+    )
     return {
         "field": {
             "field_name": "测试地块",
             "land_id": "LAND001",
             "field_id": "00000000-0000-0000-0000-000000000001",
+            "area_ha": 0.93,
+            "crop_type": "corn",
         },
         "window": {
             "start_date": "2026-06-01",
             "end_date": "2026-09-30",
             "label": "2026夏玉米",
-            "crops": ["summer_corn"],
+            "crops": ["玉米"],
         },
         "data_source": "test",
-        "scenes": {
-            "s2_count": 7,
-            "s1_count": 4,
-            "s2_official_count": 7,
-            "s2_clear_count": 7,
+        "scenes": scenes,
+        "ndvi": ndvi,
+        "ndmi": {"mean": 0.1, "series": [{"date": "2026-06-05", "value": 0.18, "official": True}]},
+        "drought": drought,
+        "flood": flood,
+        "harvest": harvest,
+        "prior_year": {
+            "start_date": "2025-06-01",
+            "end_date": "2025-09-30",
+            "ndvi_mean": 0.24,
+            "ndvi_peak": {"date": "2025-08-11", "value": 0.85},
+            "point_count": 20,
         },
-        "ndvi": {
-            "mean": 0.55,
-            "peak": {"date": "2026-08-05", "value": 0.7},
-            "latest": {"date": "2026-09-05", "value": 0.4},
-            "series": [
-                {"date": "2026-06-05", "value": 0.32},
-                {"date": "2026-08-05", "value": 0.7},
-            ],
-        },
-        "ndmi": {"mean": 0.1, "series": [{"date": "2026-06-05", "value": 0.18}]},
-        "drought": {
-            "drought_scene_count": 1,
-            "counts": {"normal": 6, "mild": 1, "unreliable": 0},
-            "days": [{"date": "2026-08-20", "class": "mild"}],
-            "scene_classes": [
-                {"date": "2026-06-05", "class": "normal"},
-                {"date": "2026-08-20", "class": "mild"},
-            ],
-        },
-        "flood": {
-            "status": "ok",
-            "vv_median": -12.0,
-            "flood_scene_count": 0,
-            "counts": {"dry": 4, "watch": 0},
-            "scenes": [
-                {
-                    "date": "2026-07-01",
-                    "vv": -12.0,
-                    "vh": -18.0,
-                    "relative_orbit": 10,
-                    "class": "dry",
-                }
-            ],
-            "note": None,
-        },
-        "harvest": {
-            "status": "uncertain",
-            "harvest_date": None,
-            "confidence": "low",
-        },
-        "prior_year": None,
         "methodology": {
             "drought": "S2 干旱规则摘要",
             "flood": "洪涝需同时满足 VV≤-17.0 dB、相对基线下降≥3.0 dB。",
@@ -86,7 +142,13 @@ def _rich_facts() -> dict:
         "timeline": [
             {
                 "month": "2026-06",
+                "period_label": "6月",
+                "crop_stage_estimate": "苗期–拔节（估计）",
+                "s2_growth": "官方/可用2景，NDVI均0.32，最高0.32",
+                "moisture": "正常6",
+                "s1_flood": "未检出洪涝（0景）",
                 "s2_count": 2,
+                "s2_official_count": 2,
                 "s1_count": 0,
                 "drought_days": 0,
                 "flood_count": 0,
@@ -94,7 +156,13 @@ def _rich_facts() -> dict:
             },
             {
                 "month": "2026-07",
+                "period_label": "7月",
+                "crop_stage_estimate": "拔节–抽雄/吐丝（估计）",
+                "s2_growth": "官方/可用2景",
+                "moisture": "正常",
+                "s1_flood": "未检出洪涝（3景）",
                 "s2_count": 2,
+                "s2_official_count": 2,
                 "s1_count": 3,
                 "drought_days": 0,
                 "flood_count": 0,
@@ -146,25 +214,69 @@ def _rich_facts() -> dict:
                 "vh": -18.0,
                 "flood_class": "dry",
                 "flood_class_cn": "正常",
+            },
+            {
+                "date": "2026-07-01",
+                "relative_orbit": 10,
+                "vv": -11.0,
+                "vh": -17.0,
+                "flood_class": "dry",
+                "flood_class_cn": "正常",
+            },
+        ],
+        "confidence": confidence,
+        "status_cards": status_cards,
+        "evidence_cards": evidence_cards,
+        "yoy": yoy,
+        "phenology_estimate": [
+            {
+                "start": "2026-06-01",
+                "end": "2026-06-30",
+                "month": 6,
+                "label": "苗期–拔节（估计）",
             }
         ],
+        "program_core_conclusion": program_core_conclusion(
+            status_cards=status_cards, yoy=yoy, harvest=harvest
+        ),
+        "program_conclusions": program_conclusions(
+            scenes=scenes, ndvi=ndvi, drought=drought, flood=flood, harvest=harvest, yoy=yoy
+        ),
+        "disclaimer": FOOTER_DISCLAIMER,
     }
 
 
 def _rich_ai() -> dict:
     return {
-        "one_liner": "遥感事实已生成（AI 摘要未启用）",
-        "summary": "大模型未配置，仅含程序事实。",
-        "evidence_bullets": ["S2 景数 7"],
-        "core_conclusion": "窗口内长势总体可观测。",
-        "moisture_analysis": "干旱轻度 1 景；无洪涝。",
-        "interpretation": "大模型未配置。",
-        "causes_ranked": ["数据覆盖有限"],
-        "recommendations": None,
-        "follow_up": ["补充田间调查"],
-        "timeline_notes": "7 月 S1 覆盖较好。",
+        "core_conclusion": "冠层绿度中期较高，九月回落，收获需田间确认。",
+        "synthesis": "官方可用景较充足。峰值在8月。干旱有提示，洪涝未检出。收获信号低置信度，疑似进入成熟后期或收获准备阶段，需田间确认。峰值日期较上年提前。还缺土壤与气象资料。",
+        "timeline_bullets": ["6月苗期绿度上升", "8月峰值", "9月绿度回落"],
+        "monthly_notes": ["绿度上升（估计）", "抽雄阶段绿度高（估计）"],
+        "conclusions": ["冠层绿度前高后落", "干旱提示存在", "洪涝未检出"],
+        "factors_strong": ["九月绿度回落与干旱等级共现"],
+        "factors_mid": ["峰值日期提前"],
+        "factors_weak": ["品种与播种未提供"],
+        "actions_now": "田间确认成熟与脱水。",
+        "actions_week": "关注墒情变化。",
+        "actions_next_season": "补充播种与气象资料。",
+        "evidence_gaps": ["实测播种日期"],
         "llm_configured": False,
     }
+
+
+def _pdf_text(path: Path) -> str:
+    try:
+        from pypdf import PdfReader
+    except ImportError:
+        return path.read_bytes().decode("latin-1", errors="ignore")
+    reader = PdfReader(str(path))
+    parts = []
+    for page in reader.pages:
+        try:
+            parts.append(page.extract_text() or "")
+        except Exception:
+            continue
+    return "\n".join(parts)
 
 
 class SeasonGrowthPdfTests(unittest.TestCase):
@@ -203,6 +315,16 @@ class SeasonGrowthPdfTests(unittest.TestCase):
         self.assertEqual(by_date["2026-06-05"]["quality"], "raw")
         self.assertIn("2026-06-07", by_date)
         self.assertEqual(len(out), 3)
+
+    def test_filter_s1_appendix_dedupes(self) -> None:
+        rows = [
+            {"date": "2026-07-01", "vv": -11.0},
+            {"date": "2026-07-01", "vv": -14.0},
+            {"date": "2026-07-13", "vv": -12.0},
+        ]
+        out = filter_s1_appendix_rows(rows)
+        self.assertEqual(len(out), 2)
+        self.assertEqual(out[0]["vv"], -14.0)
 
     def test_render_minimal_pdf_bytes(self) -> None:
         facts = {
@@ -244,11 +366,9 @@ class SeasonGrowthPdfTests(unittest.TestCase):
             "prior_year": None,
         }
         ai = {
-            "one_liner": "遥感事实已生成（AI 摘要未启用）",
-            "summary": "大模型未配置，仅含程序事实。",
-            "evidence_bullets": [],
-            "interpretation": "大模型未配置。",
-            "recommendations": None,
+            "core_conclusion": "遥感事实已生成（AI 解读未启用）",
+            "synthesis": "大模型未配置，仅含程序事实。",
+            "timeline_bullets": [],
             "llm_configured": False,
         }
         with tempfile.TemporaryDirectory() as tmp:
@@ -264,13 +384,11 @@ class SeasonGrowthPdfTests(unittest.TestCase):
             data = path.read_bytes()
             self.assertGreater(len(data), 500)
             self.assertTrue(data.startswith(b"%PDF"))
-            # Tighter layout: fewer page objects than old 8+ section breaks
             page_count = data.count(b"/Type /Page")
-            # ReportLab may emit /Type /Pages as well; count leaf pages via /Type /Page\n or similar
-            self.assertGreaterEqual(page_count, 1)
-            self.assertLessEqual(page_count, 12)
+            self.assertGreaterEqual(page_count, 5)
+            self.assertLessEqual(page_count, 14)
 
-    def test_render_richer_pdf_no_raw_dict_dump(self) -> None:
+    def test_render_richer_pdf_no_raw_dict_or_banned(self) -> None:
         facts = _rich_facts()
         ai = _rich_ai()
         with tempfile.TemporaryDirectory() as tmp:
@@ -287,19 +405,34 @@ class SeasonGrowthPdfTests(unittest.TestCase):
             self.assertGreater(len(data), 3000)
             self.assertTrue(data.startswith(b"%PDF"))
             self.assertIn(b"/Type /Page", data)
-            # Raw Python dict / English harvest dump should not appear in content streams
             self.assertNotIn(b"{'unreliable'", data)
             self.assertNotIn(b"detected /", data)
-            # core_conclusion should not be duplicated as 结论复述 label in content
-            # (Chinese may be encoded; at least ensure PDF builds with empty materials footnote path)
-            path2 = render_season_growth_pdf(
-                facts=facts,
-                ai={**ai, "core_conclusion": "核心结论一句。"},
-                chart_paths=None,
-                materials_meta=[],
-                out_path=Path(tmp) / "season_rich2.pdf",
-            )
-            self.assertTrue(path2.exists())
+            extracted = _pdf_text(path)
+            banned = ["生物量积累达标", "生物量达标", "立即收割", "生育进程提前一个月"]
+            haystack = extracted + (facts.get("program_core_conclusion") or "")
+            for phrase in banned:
+                self.assertNotIn(phrase, haystack)
+                self.assertNotIn(phrase.encode("utf-8"), data)
+            # v2 layout: cover+研判+curves+timeline+actions (+ appendix)
+            page_count = data.count(b"/Type /Page")
+            self.assertGreaterEqual(page_count, 5)
+            # Chinese extraction is font-dependent; only assert when glyphs round-trip.
+            if "地块" in extracted or "长势" in extracted:
+                self.assertIn("综合研判", extracted)
+                self.assertIn("核心结论", extracted)
+                self.assertIn("可信度", extracted)
+                self.assertIn("年度对比", extracted)
+                self.assertNotIn("证据要点", extracted)
+                self.assertNotIn("结论复述", extracted)
+            self.assertIn("疑似进入成熟后期或收获准备阶段", facts["status_cards"][3]["value"])
+            self.assertIn("估计", facts["timeline"][0]["crop_stage_estimate"])
+
+    def test_status_cards_harvest_wording(self) -> None:
+        facts = _rich_facts()
+        harvest_card = next(c for c in facts["status_cards"] if c["key"] == "harvest")
+        self.assertIn("疑似进入成熟后期或收获准备阶段", harvest_card["value"])
+        self.assertEqual(harvest_card["confidence"], "低")
+        self.assertIn("估计", facts["timeline"][0]["crop_stage_estimate"])
 
 
 if __name__ == "__main__":

@@ -3,6 +3,7 @@
 
 from __future__ import annotations
 
+import logging
 import re
 import uuid
 from collections import Counter
@@ -22,6 +23,8 @@ from app.core.agri_classify import (
 from app.core.agri_tags import parse_agri_land_id
 from app.core.harvest_detect import detect_harvest
 from openfarm_common.growing_seasons import months_from_window
+
+logger = logging.getLogger(__name__)
 
 if TYPE_CHECKING:
     from sqlalchemy.orm import Session
@@ -279,13 +282,24 @@ def _drought_summary(
         scene_classes.append({"date": d, "class": c})
         if is_drought_day_class(cls):
             days.append({"date": d, "class": c})
+    usable = dedupe_usable_scene_classes(scene_classes)
+    usable_counts: Counter[str] = Counter()
+    usable_days: list[dict[str, str]] = []
+    for sc in usable:
+        c = str(sc.get("class") or "")
+        usable_counts[c] += 1
+        if is_drought_day_class(c):
+            usable_days.append({"date": sc["date"], "class": c})
     return {
-        "counts": dict(counts),
+        # Prefer deduped official/usable counts for report cards / timeline.
+        "counts": dict(usable_counts),
+        "raw_counts": dict(counts),
         "drought_scene_count": sum(
-            counts.get(k, 0) for k in ("mild", "moderate", "severe")
+            usable_counts.get(k, 0) for k in ("mild", "moderate", "severe")
         ),
-        "days": days[:40],
+        "days": usable_days[:40],
         "scene_classes": scene_classes,
+        "usable_scene_classes": usable,
         "classified": scene_classes,
     }
 
@@ -511,6 +525,128 @@ def _build_s1_appendix(flood: dict[str, Any]) -> list[dict[str, Any]]:
     return out
 
 
+
+# Prefer usable drought classes over unreliable when collapsing raw+good duplicates.
+_DROUGHT_CLASS_PRIORITY = {
+    "severe": 60,
+    "moderate": 50,
+    "mild": 40,
+    "normal": 30,
+    "out_of_season": 20,
+    "unreliable": 10,
+}
+
+
+def dedupe_usable_scene_classes(
+    scene_classes: list[dict[str, Any]] | None,
+) -> list[dict[str, str]]:
+    """One class per date from official/usable scenes (not raw+good duplicates).
+
+    When the same date appears multiple times (e.g. raw unreliable + good severe),
+    keep the higher-priority usable class so monthly moisture matches drought.days.
+    """
+    by_date: dict[str, dict[str, str]] = {}
+    for sc in scene_classes or []:
+        d = str(sc.get("date") or "")[:10]
+        if not d:
+            continue
+        cls = str(sc.get("class") or "")
+        prev = by_date.get(d)
+        if prev is None:
+            by_date[d] = {"date": d, "class": cls}
+            continue
+        prev_cls = str(prev.get("class") or "")
+        if _DROUGHT_CLASS_PRIORITY.get(cls, 0) > _DROUGHT_CLASS_PRIORITY.get(prev_cls, 0):
+            by_date[d] = {"date": d, "class": cls}
+    return [by_date[k] for k in sorted(by_date.keys())]
+
+
+def count_classes_by_month(
+    usable: list[dict[str, Any]], prefix: str
+) -> dict[str, int]:
+    counts: dict[str, int] = {}
+    for sc in usable:
+        if not str(sc.get("date") or "").startswith(prefix):
+            continue
+        c = str(sc.get("class") or "")
+        if not c:
+            continue
+        counts[c] = counts.get(c, 0) + 1
+    return counts
+
+
+def drought_days_counts_for_month(
+    days: list[dict[str, Any]] | None, prefix: str
+) -> dict[str, int]:
+    """Unique-date drought-day counts for a YYYY-MM prefix."""
+    by_date: dict[str, str] = {}
+    for d in days or []:
+        ds = str(d.get("date") or "")[:10]
+        if not ds.startswith(prefix):
+            continue
+        cls = str(d.get("class") or "")
+        if not is_drought_day_class(cls):
+            continue
+        prev = by_date.get(ds)
+        if prev is None or _DROUGHT_CLASS_PRIORITY.get(cls, 0) > _DROUGHT_CLASS_PRIORITY.get(
+            prev, 0
+        ):
+            by_date[ds] = cls
+    out: dict[str, int] = {}
+    for cls in by_date.values():
+        out[cls] = out.get(cls, 0) + 1
+    return out
+
+
+def ensure_timeline_moisture_consistent(
+    timeline: list[dict[str, Any]],
+    drought: dict[str, Any],
+) -> list[dict[str, Any]]:
+    """If monthly moisture drought counts ≠ drought.days, log and prefer scene re-agg."""
+    usable = list(drought.get("usable_scene_classes") or [])
+    if not usable:
+        usable = dedupe_usable_scene_classes(
+            drought.get("scene_classes") or drought.get("classified") or []
+        )
+    days = list(drought.get("days") or [])
+    out: list[dict[str, Any]] = []
+    for row in timeline:
+        row = dict(row)
+        prefix = str(row.get("month") or "")
+        if not prefix:
+            out.append(row)
+            continue
+        scene_counts = count_classes_by_month(usable, prefix)
+        day_counts = drought_days_counts_for_month(days, prefix)
+        scene_drought = {
+            k: scene_counts.get(k, 0) for k in ("severe", "moderate", "mild")
+        }
+        # Compare drought-day subset only
+        mismatch = any(
+            int(scene_drought.get(k) or 0) != int(day_counts.get(k) or 0)
+            for k in ("severe", "moderate", "mild")
+        )
+        if mismatch:
+            logger.warning(
+                "timeline moisture inconsistency month=%s scene=%s days=%s; preferring scene re-aggregation",
+                prefix,
+                scene_drought,
+                day_counts,
+            )
+            # Prefer scene re-aggregation: rebuild moisture from usable scenes
+            row["moisture"] = format_drought_counts_inline(scene_counts)
+            row["moisture_counts"] = scene_counts
+            row["drought_days"] = sum(scene_drought.values())
+            row["moisture_source"] = "usable_scene_reagg"
+        else:
+            row["moisture"] = format_drought_counts_inline(scene_counts)
+            row["moisture_counts"] = scene_counts
+            row["drought_days"] = sum(scene_drought.values())
+            row["moisture_source"] = "usable_scene"
+        out.append(row)
+    return out
+
+
 def _build_timeline(
     *,
     start: date,
@@ -534,14 +670,16 @@ def _build_timeline(
         else:
             m += 1
 
+    usable_classes = list(drought.get("usable_scene_classes") or [])
+    if not usable_classes:
+        usable_classes = dedupe_usable_scene_classes(
+            drought.get("scene_classes") or drought.get("classified") or []
+        )
     drought_days = {
         str(d.get("date")): str(d.get("class"))
         for d in (drought.get("days") or [])
     }
-    class_by_date = {
-        str(sc.get("date")): str(sc.get("class") or "")
-        for sc in (drought.get("scene_classes") or drought.get("classified") or [])
-    }
+    class_by_date = {str(sc.get("date")): str(sc.get("class") or "") for sc in usable_classes}
     flood_scenes = list(flood.get("scenes") or [])
     ndvi_ts = list(ndvi_ts or [])
 
@@ -588,14 +726,7 @@ def _build_timeline(
             else None
         )
         ndvi_max = round(max(month_ndvi_vals), 4) if month_ndvi_vals else None
-        month_classes = [
-            class_by_date[d]
-            for d in class_by_date
-            if d.startswith(prefix)
-        ]
-        month_drought_counts: dict[str, int] = {}
-        for c in month_classes:
-            month_drought_counts[c] = month_drought_counts.get(c, 0) + 1
+        month_drought_counts = count_classes_by_month(usable_classes, prefix)
         if month_ndvi_vals:
             s2_growth = (
                 f"官方/可用{official_n or len(month_ndvi_vals)}景，"
@@ -605,6 +736,23 @@ def _build_timeline(
         else:
             s2_growth = f"S2 {s2_n} 景，可用绿度点不足"
         moisture = format_drought_counts_inline(month_drought_counts)
+        day_counts = drought_days_counts_for_month(
+            list(drought.get("days") or []), prefix
+        )
+        scene_drought_n = sum(
+            int(month_drought_counts.get(k) or 0) for k in ("mild", "moderate", "severe")
+        )
+        days_drought_n = sum(int(day_counts.get(k) or 0) for k in ("mild", "moderate", "severe"))
+        if scene_drought_n != days_drought_n:
+            logger.warning(
+                "timeline moisture inconsistency month=%s scene_drought=%s days=%s; preferring scene re-aggregation",
+                prefix,
+                {k: month_drought_counts.get(k, 0) for k in ("severe", "moderate", "mild")},
+                day_counts,
+            )
+            drought_n = scene_drought_n
+        else:
+            drought_n = scene_drought_n
         if flood_n:
             s1_flood = f"洪涝{flood_n}" + (f" / 关注{watch_n}" if watch_n else "")
         elif watch_n:
@@ -622,6 +770,7 @@ def _build_timeline(
                 ),
                 "s2_growth": s2_growth,
                 "moisture": moisture,
+                "moisture_counts": month_drought_counts,
                 "s1_flood": s1_flood,
                 "s2_count": s2_n,
                 "s2_official_count": official_n,
@@ -935,7 +1084,7 @@ def compute_status_cards(
     if drought_n <= 0:
         drought_value = "官方干旱景未检出"
     elif severe >= 3:
-        drought_value = "提示偏高"
+        drought_value = "偏干提示增多"
     else:
         drought_value = "提示存在干旱景"
     drought_detail = format_drought_counts_inline(counts)
@@ -980,7 +1129,7 @@ def compute_status_cards(
         },
         {
             "key": "drought",
-            "title": "干旱风险",
+            "title": "水分状态",
             "value": drought_value,
             "detail": drought_detail,
             "confidence": conf_d.get("level_cn") or "中",
@@ -988,7 +1137,7 @@ def compute_status_cards(
         },
         {
             "key": "flood",
-            "title": "洪涝风险",
+            "title": "洪涝监测",
             "value": flood_value,
             "detail": flood_detail,
             "confidence": conf_f.get("level_cn") or "低",
@@ -996,7 +1145,7 @@ def compute_status_cards(
         },
         {
             "key": "harvest",
-            "title": "收获状态",
+            "title": "成熟·收获",
             "value": harvest_value,
             "detail": harvest_detail,
             "confidence": conf_h.get("level_cn") or "低",
@@ -1539,6 +1688,14 @@ def build_season_facts(
         "program_core_conclusion": core_line,
         "program_conclusions": conclusions,
         "disclaimer": FOOTER_DISCLAIMER,
+        "spatial": {
+            "has_pixel_stats": False,
+            "has_anomaly_cluster": False,
+            "rgb_url": None,
+            "rgb_local_path": None,
+            "ndvi_local_path": None,
+            "note": "当前版本暂未生成地块内部空间分级统计",
+        },
     }
     return facts
 
@@ -1672,12 +1829,22 @@ def facts_for_llm(
         "program_conclusions": facts.get("program_conclusions"),
         "disclaimer": facts.get("disclaimer"),
         "ai_rules": {
-            "core_conclusion_max_chars": 80,
-            "synthesis_chars": "150-250",
+            "core_conclusion_max_chars": 90,
+            "synthesis_chars": "120-180",
             "yoy_only": "只能写峰值日期提前/推后，禁止写生育进程提前一个月",
             "harvest_wording": "疑似进入成熟后期或收获准备阶段，需田间确认",
             "september_drought": "绿度下降与干旱共现=成熟脱水+天气偏干可能同时存在，不能定量",
-            "ban": ["生物量积累达标", "生物量达标", "立即收割", "生育进程提前一个月"],
+            "ban": [
+                "生物量积累达标",
+                "生物量达标",
+                "立即收割",
+                "生育进程提前一个月",
+                "排水良好",
+                "排水条件良好",
+                "无渍涝隐患",
+                "收获窗口开启",
+                "干旱风险提示偏高",
+            ],
         },
     }
 

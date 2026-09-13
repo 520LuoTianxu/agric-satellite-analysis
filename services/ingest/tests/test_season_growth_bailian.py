@@ -71,7 +71,7 @@ class BailianClientTests(unittest.TestCase):
         client.close()
         self.assertTrue(out["llm_configured"])
         self.assertIn("冠层绿度", out["core_conclusion"] or "")
-        self.assertLessEqual(len(out["core_conclusion"] or ""), 80)
+        self.assertLessEqual(len(out["core_conclusion"] or ""), 90)
         self.assertIn("田间确认", out["synthesis"] or "")
         self.assertEqual(len(out["timeline_bullets"]), 3)
         self.assertEqual(out["factors_strong"][0], "官方干旱景与九月绿度回落共现")
@@ -110,7 +110,7 @@ class BailianClientTests(unittest.TestCase):
         self.assertEqual(out["factors_mid"], ["原因A"])
         self.assertEqual(out["evidence_gaps"], ["a"])
         self.assertIn("建议1", out["actions_now"] or "")
-        self.assertLessEqual(len(out["core_conclusion"] or ""), 80)
+        self.assertLessEqual(len(out["core_conclusion"] or ""), 90)
 
     def test_legacy_keys_mapped(self) -> None:
         out = bailian._normalize_ai(

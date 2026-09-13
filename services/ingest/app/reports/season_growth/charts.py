@@ -54,10 +54,30 @@ def _setup_font() -> None:
 def _drought_class_by_date(facts: dict[str, Any]) -> dict[str, str]:
     drought = facts.get("drought") or {}
     out: dict[str, str] = {}
-    for sc in drought.get("scene_classes") or drought.get("classified") or []:
+    source = (
+        drought.get("usable_scene_classes")
+        or drought.get("scene_classes")
+        or drought.get("classified")
+        or []
+    )
+    # Prefer higher-priority class if duplicates sneak in
+    prio = {
+        "severe": 60,
+        "moderate": 50,
+        "mild": 40,
+        "normal": 30,
+        "out_of_season": 20,
+        "unreliable": 10,
+    }
+    for sc in source:
         d = sc.get("date")
-        if d and d not in out:
-            out[str(d)[:10]] = str(sc.get("class") or "")
+        if not d:
+            continue
+        key = str(d)[:10]
+        cls = str(sc.get("class") or "")
+        prev = out.get(key)
+        if prev is None or prio.get(cls, 0) > prio.get(prev, 0):
+            out[key] = cls
     return out
 
 
@@ -182,15 +202,9 @@ def render_ndvi_ndmi_chart(
     if rel_ndvi:
         xs = [datetime.fromisoformat(p["date"][:10]) for p in rel_ndvi]
         ys = [float(p["value"]) for p in rel_ndvi]
-        ax.plot(xs, ys, color="#66bb6a", linewidth=1.6, label="NDVI（可靠）", zorder=2)
-        colors = [
-            _DROUGHT_MARKER_COLORS.get(
-                class_by_date.get(p["date"][:10], "normal"), "#2e7d32"
-            )
-            for p in rel_ndvi
-        ]
+        ax.plot(xs, ys, color="#1b4332", linewidth=2.4, label="NDVI（可靠）", zorder=3)
         ax.scatter(
-            xs, ys, c=colors, s=30, zorder=3, edgecolors="white", linewidths=0.4
+            xs, ys, c="#2e7d32", s=22, zorder=4, edgecolors="white", linewidths=0.4
         )
     if unrel_ndvi:
         xu = [datetime.fromisoformat(p["date"][:10]) for p in unrel_ndvi]
@@ -199,11 +213,12 @@ def render_ndvi_ndmi_chart(
             xu,
             yu,
             facecolors="none",
-            edgecolors="#bdbdbd",
-            s=26,
-            linewidths=0.9,
-            zorder=3,
-            label="不可靠点（不连线）",
+            edgecolors="#cfd8dc",
+            s=20,
+            linewidths=0.6,
+            alpha=0.45,
+            zorder=2,
+            label="不可靠（不连线）",
         )
     if rel_ndmi:
         xs2 = [datetime.fromisoformat(p["date"][:10]) for p in rel_ndmi]
@@ -212,20 +227,11 @@ def render_ndvi_ndmi_chart(
             xs2,
             ys2,
             color="#1565c0",
-            linewidth=1.5,
+            linewidth=1.1,
+            linestyle="--",
             label="NDMI（可靠）",
-            alpha=0.95,
-            zorder=2,
-        )
-        ax.scatter(
-            xs2,
-            ys2,
-            facecolors="#1565c0",
-            edgecolors="white",
-            s=18,
-            marker="s",
+            alpha=0.9,
             zorder=3,
-            linewidths=0.3,
         )
     if unrel_ndmi:
         xu2 = [datetime.fromisoformat(p["date"][:10]) for p in unrel_ndmi]
@@ -235,10 +241,11 @@ def render_ndvi_ndmi_chart(
             yu2,
             facecolors="none",
             edgecolors="#90a4ae",
-            s=18,
+            s=14,
             marker="s",
-            linewidths=0.8,
-            zorder=3,
+            linewidths=0.5,
+            alpha=0.35,
+            zorder=2,
         )
 
     # Annotate peak / latest official
@@ -269,8 +276,24 @@ def render_ndvi_ndmi_chart(
                 color="#37474f",
             )
 
-    for a, b in _dry_spells(class_by_date):
-        ax.axvspan(a, b + timedelta(days=1), color="#ffcdd2", alpha=0.18, zorder=0)
+    # Annotate September dry if present
+    sep_dry = [
+        (d, c)
+        for d, c in class_by_date.items()
+        if d[5:7] == "09" and c in ("mild", "moderate", "severe")
+    ]
+    if sep_dry:
+        sdt = _to_dt(sep_dry[0][0])
+        if sdt is not None:
+            ax.annotate(
+                "九月偏干",
+                xy=(sdt, ax.get_ylim()[0] + 0.02),
+                xytext=(0, 18),
+                textcoords="offset points",
+                fontsize=7,
+                color="#c62828",
+                ha="center",
+            )
 
     win = facts.get("window") or {}
     title = "生育期 NDVI / NDMI（可靠点连线）"
@@ -280,45 +303,45 @@ def render_ndvi_ndmi_chart(
     ax.set_title(title, fontsize=10)
     ax.set_ylabel("指数值")
     ax.set_xlabel("日期")
-    ax.grid(True, alpha=0.25, zorder=0)
+    ax.grid(True, alpha=0.22, zorder=0)
     _draw_phenology_bands(ax, facts)
+
+    # Bottom drought event strip (not rainbow point colors)
+    ymin, ymax = ax.get_ylim()
+    strip_y = ymin - (ymax - ymin) * 0.08
+    ax.set_ylim(strip_y - (ymax - ymin) * 0.02, ymax)
+    for d, c in class_by_date.items():
+        if c not in ("mild", "moderate", "severe"):
+            continue
+        dt = _to_dt(d)
+        if dt is None:
+            continue
+        ax.plot(
+            [dt, dt],
+            [strip_y, strip_y + (ymax - ymin) * 0.05],
+            color=_DROUGHT_MARKER_COLORS.get(c, "#c62828"),
+            linewidth=2.2,
+            solid_capstyle="round",
+            zorder=5,
+        )
+    ax.axhline(strip_y, color="#eceff1", linewidth=6, zorder=1, alpha=0.9)
 
     handles, labels = ax.get_legend_handles_labels()
     extra = [
+        Line2D([0], [0], color=_DROUGHT_MARKER_COLORS["mild"], lw=2, label="干旱事件·轻"),
+        Line2D([0], [0], color=_DROUGHT_MARKER_COLORS["moderate"], lw=2, label="干旱事件·中"),
+        Line2D([0], [0], color=_DROUGHT_MARKER_COLORS["severe"], lw=2, label="干旱事件·重"),
         Line2D(
-            [0],
-            [0],
-            marker="o",
-            color="w",
-            markerfacecolor=c,
-            markersize=6.5,
-            label=lab,
-        )
-        for lab, c in (
-            ("正常", _DROUGHT_MARKER_COLORS["normal"]),
-            ("轻度", _DROUGHT_MARKER_COLORS["mild"]),
-            ("中度", _DROUGHT_MARKER_COLORS["moderate"]),
-            ("重度", _DROUGHT_MARKER_COLORS["severe"]),
-        )
+            [0], [0], marker="o", color="w", markerfacecolor="none",
+            markeredgecolor="#cfd8dc", markersize=6, label="不可靠（不连线）",
+        ),
+        Patch(facecolor="#e8f5e9", edgecolor="none", label="物候带（估计）"),
     ]
-    extra.append(
-        Line2D(
-            [0],
-            [0],
-            marker="o",
-            color="w",
-            markerfacecolor="none",
-            markeredgecolor="#bdbdbd",
-            markersize=6.5,
-            label="不可靠/非官方",
-        )
-    )
-    extra.append(Patch(facecolor="#e8f5e9", edgecolor="none", label="物候带（估计）"))
     ax.legend(
         handles + extra,
         labels + [h.get_label() for h in extra],
         loc="lower left",
-        fontsize=6.2,
+        fontsize=6.0,
         ncol=3,
         framealpha=0.9,
     )

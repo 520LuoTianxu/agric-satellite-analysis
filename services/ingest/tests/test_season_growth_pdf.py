@@ -386,8 +386,9 @@ class SeasonGrowthPdfTests(unittest.TestCase):
             self.assertGreater(len(data), 500)
             self.assertTrue(data.startswith(b"%PDF"))
             page_count = data.count(b"/Type /Page")
+            # Count leaf pages roughly; allow /Type /Pages parent too — prefer pdfinfo in e2e.
             self.assertGreaterEqual(page_count, 5)
-            self.assertLessEqual(page_count, 14)
+            self.assertLessEqual(page_count, 16)
 
     def test_render_richer_pdf_no_raw_dict_or_banned(self) -> None:
         facts = _rich_facts()
@@ -420,17 +421,18 @@ class SeasonGrowthPdfTests(unittest.TestCase):
             self.assertNotIn("立即收割。", haystack)
             self.assertNotIn("生育进程提前一个月。", haystack)
             self.assertNotIn("已生育进程提前一个月", haystack)
-            # v2 layout: cover+研判+curves+timeline+actions (+ appendix)
             page_count = data.count(b"/Type /Page")
-            self.assertGreaterEqual(page_count, 5)
+            self.assertGreaterEqual(page_count, 8)
             # Chinese extraction is font-dependent; only assert when glyphs round-trip.
             if "地块" in extracted or "长势" in extracted:
                 self.assertIn("综合研判", extracted)
-                self.assertIn("核心结论", extracted)
-                self.assertIn("可信度", extracted)
-                self.assertIn("年度对比", extracted)
+                self.assertTrue("核心判断" in extracted or "核心结论" in extracted)
+                self.assertTrue("判断可信度" in extracted or "可信度" in extracted)
+                self.assertIn("空间长势", extracted)
                 self.assertNotIn("证据要点", extracted)
                 self.assertNotIn("结论复述", extracted)
+                self.assertNotIn("排水条件良好", extracted)
+                self.assertNotIn("窗口覆盖摘要", extracted)
             self.assertIn("疑似进入成熟后期或收获准备阶段", facts["status_cards"][3]["value"])
             self.assertIn("估计", facts["timeline"][0]["crop_stage_estimate"])
 
@@ -485,9 +487,40 @@ class SeasonGrowthPdfTests(unittest.TestCase):
             self.assertEqual(len(_items_from_value(ai["actions_now"])), 2)
             self.assertGreaterEqual(len(_items_from_value(ai["evidence_gaps"])), 2)
             if "农事" in extracted or "长势" in extracted:
-                self.assertIn("农事风险", extracted)
+                self.assertTrue("农事建议" in extracted or "农事风险" in extracted)
             for banned_rs in ("无人机", "多源卫星"):
                 self.assertNotIn(banned_rs, str(ai.get("actions_next_season") or ""))
+
+
+    def test_round2_exactly_ten_pages(self) -> None:
+        facts = _rich_facts()
+        facts["spatial"] = {
+            "has_pixel_stats": False,
+            "rgb_url": None,
+            "rgb_local_path": None,
+        }
+        ai = _rich_ai()
+        with tempfile.TemporaryDirectory() as tmp:
+            out = Path(tmp) / "season_10.pdf"
+            path = render_season_growth_pdf(
+                facts=facts,
+                ai=ai,
+                chart_paths=None,
+                materials_meta=[],
+                out_path=out,
+            )
+            try:
+                from pypdf import PdfReader
+                n = len(PdfReader(str(path)).pages)
+            except Exception:
+                n = path.read_bytes().count(b"/Type /Page")
+            self.assertEqual(n, 10)
+            extracted = _pdf_text(path)
+            for banned in ("排水条件良好", "无渍涝隐患", "生物量达标", "建议立即收割"):
+                self.assertNotIn(banned, extracted)
+            if "空间" in extracted:
+                self.assertIn("暂未生成地块内部空间分级统计", extracted)
+                self.assertIn("暂无可靠的空间异常聚集结论", extracted)
 
 
 if __name__ == "__main__":

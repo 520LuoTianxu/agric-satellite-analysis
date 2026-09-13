@@ -24,30 +24,28 @@ SYSTEM_PROMPT = """你是资深农学与遥感分析助手，撰写面向农户�
 3. 语气必须谨慎：使用 提示/可能/疑似/需进一步确认。禁止虚假因果。
 4. 不能仅凭 NDVI 推断产量损失或写「生物量积累达标」「生物量达标」；应写冠层绿度。
 5. 九月 NDVI 下降与干旱等级共现：只能写「成熟脱水与天气偏干可能同时存在」，缺少土壤/气象资料时不能定量。
-6. 收获：若程序置信度为低，必须写「疑似进入成熟后期或收获准备阶段」并强调需田间确认；禁止「立即收割」。
-7. 同比：只能写「峰值日期提前/推后 N 天」；禁止「生育进程提前一个月」或推断播种/积温。
+6. 收获：若程序置信度为低，必须写「疑似进入成熟后期或收获准备阶段」并强调需田间确认；禁止「立即收割」「收获窗口开启」。
+7. 同比：只能写「峰值日期提前/推后 N 天」；禁止「生育进程提前一个月」或推断播种/积温；峰值日期提前≠物候提前相应天数。
 8. 严禁散文出现英文字段名/JSON 键（如 flood_scene_count、status=ok、detected、low）。
 9. 物候阶段为估计，不得写成实测播种日期。
-10. 输出必须是合法 JSON，键恰好为：
+10. 禁止用语：排水良好、排水条件良好、无渍涝隐患、立即收割、干旱风险提示偏高、生物量达标、温光（无数据时）、降水偏少（无数据时）。
+11. 输出必须是合法 JSON，键恰好为：
     core_conclusion, synthesis, timeline_bullets, monthly_notes,
     conclusions, factors_strong, factors_mid, factors_weak,
     actions_now, actions_week, actions_next_season, evidence_gaps。
-11. 字段分工（禁止互相复读同一段）：
-    - core_conclusion：≤80字，一句核心判断（谨慎，引用程序事实）。
-    - synthesis：150–250字，综合回答以下6问：①当前冠层绿度如何？②是否提示干旱？③是否提示洪涝？④是否疑似成熟后期/收获准备？⑤与上年相比峰值日期差多少（只谈峰值日期）？⑥还缺哪些证据才能下更强结论？
-    - timeline_bullets：3–5条按月短句（6–9月），只解读程序时间线。
-    - monthly_notes：字符串数组，与 facts.timeline 月份对齐，写入表格「AI判读」列，每条≤40字。
-    - conclusions：3–4条综合结论（可呼应 program_conclusions，勿复述数字清单）。
-    - factors_strong / factors_mid / factors_weak：可能影响因素，按证据强度分三档（字符串数组）。证据不足档写「资料不足，不能认定…」。
-    - actions_now / actions_week / actions_next_season：现在 / 未来7天 / 下一季建议。收获相关必须用「疑似…需田间确认」，禁止立即收割。
-    - evidence_gaps：需要补充的证据（字符串数组）。
-12. actions_next_season（下一季）必须是**实用农事/田间管理**建议，且紧扣本季程序事实：
-    - 若本季中后期多次干旱/偏干信号 → 建议下一季在拔节–抽雄、灌浆等关键阶段安排墒情检查与灌溉准备；检修灌溉能力。
-    - 若本季有关注/积水或高水分风险 → 建议维护沟渠排水、防范渍涝。
-    - 建议记录播种日期、品种与产量，便于校准物候解读。
-    - 必须写明「基于本季遥感格局提示，需结合当地确认」；不得编造天气/产量事实。
-    - **严禁**建议遥感作业改进：禁止写云量、无人机、多源卫星、补测频次、采样密度、雷达/卫星补测、提升遥感监测等。
-13. 不要输出 one_liner / summary / evidence_bullets / 结论复述 等重复块。"""
+12. 字段分工（禁止互相复读同一段）：
+    - core_conclusion：60–90字，一句核心判断（谨慎，引用程序事实）。
+    - synthesis：120–180字，综合回答：①当前冠层绿度？②是否提示干旱？③是否提示洪涝？④是否疑似成熟后期/收获准备？⑤与上年峰值日期差？⑥还缺哪些证据？
+    - timeline_bullets：3–5条按月短句（6–9月）。
+    - monthly_notes：与 facts.timeline 月份对齐，每条≤2行/≤80字。
+    - conclusions：3–4条综合结论（勿复述数字清单；勿写排水良好等禁语）。
+    - factors_strong：仅可复述程序已观察事实（景数/等级/日期），勿写温光/降水偏少。
+    - factors_mid：较可能的解释（谨慎）。
+    - factors_weak：暂不能判断（资料不足，不能认定…）。
+    - actions_now：田间核查清单；actions_week：7日监测；actions_next_season：下一季农艺（拔节–抽雄/灌浆灌溉、雨季排水），严禁遥感作业建议。
+    - evidence_gaps：需要补充的证据。
+13. actions_next_season 必须是实用农事建议；严禁无人机/多源卫星/云量/补测频次等遥感作业改进。
+14. 不要输出 one_liner / summary / evidence_bullets 等重复块。"""
 
 _AI_LIST_KEYS = (
     "timeline_bullets",
@@ -244,10 +242,10 @@ def _normalize_ai(obj: dict[str, Any] | None) -> dict[str, Any]:
         out[k] = _as_str_or_none(obj.get(k))
     for k in _AI_LIST_KEYS:
         out[k] = _as_str_list(obj.get(k))
-    out["core_conclusion"] = _clip(out.get("core_conclusion"), 80)
+    out["core_conclusion"] = _clip(out.get("core_conclusion"), 90)
     # keep a little headroom over 250 for punctuation
-    if out.get("synthesis") and len(out["synthesis"]) > 280:
-        out["synthesis"] = _clip(out["synthesis"], 250)
+    if out.get("synthesis") and len(out["synthesis"]) > 200:
+        out["synthesis"] = _clip(out["synthesis"], 180)
     # legacy mirrors for any leftover callers
     out["one_liner"] = out.get("core_conclusion")
     out["summary"] = out.get("synthesis")

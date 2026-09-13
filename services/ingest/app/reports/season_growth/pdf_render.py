@@ -36,7 +36,7 @@ from app.reports.season_growth.facts import (
 )
 
 CST = timezone(timedelta(hours=8))
-_APPENDIX_MAX_ROWS = 80
+_APPENDIX_MAX_ROWS = 28
 _CONTENT_W = 178 * mm
 
 _QUALITY_CN = {
@@ -506,14 +506,11 @@ def _table(
     *,
     numeric_cols: set[int] | None = None,
     zebra: bool = True,
+    header_bg: str = "#dce8df",
 ) -> Table:
-    """Body/appendix tables: all text and numbers LEFT-aligned.
-
-    ``numeric_cols`` is retained for call-site compatibility but no longer
-    switches to right alignment.
-    """
+    """Tables with optional RIGHT-aligned numeric columns (appendix Round-2)."""
     styles = _styles()
-    _ = numeric_cols  # kept for API compatibility; alignment is always LEFT
+    numeric_cols = set(numeric_cols or set())
     data: list[list[Any]] = []
     for i, row in enumerate(rows):
         cells = []
@@ -521,13 +518,24 @@ def _table(
             if isinstance(c, Paragraph):
                 cells.append(c)
             elif i == 0:
-                cells.append(Paragraph(_esc(c), styles["th"]))
+                # Dark brand headers need light title text
+                if str(header_bg).lower() in ("#1b4332", "#1565c0"):
+                    th_style = ParagraphStyle(
+                        "sg_th_inv",
+                        parent=styles["th"],
+                        textColor=white,
+                    )
+                    cells.append(Paragraph(_esc(c), th_style))
+                else:
+                    cells.append(Paragraph(_esc(c), styles["th"]))
+            elif j in numeric_cols:
+                cells.append(Paragraph(_esc(c), styles["small_r"]))
             else:
                 cells.append(Paragraph(_esc(c), styles["small"]))
         data.append(cells)
     t = Table(data, colWidths=col_widths, repeatRows=1)
     cmds: list[tuple] = [
-        ("BACKGROUND", (0, 0), (-1, 0), HexColor("#dce8df")),
+        ("BACKGROUND", (0, 0), (-1, 0), HexColor(header_bg)),
         ("FONTNAME", (0, 0), (-1, -1), "CN"),
         ("FONTSIZE", (0, 0), (-1, -1), 8),
         ("GRID", (0, 0), (-1, -1), 0.35, HexColor("#c5d5c8")),
@@ -538,6 +546,8 @@ def _table(
         ("TOPPADDING", (0, 0), (-1, -1), 2),
         ("BOTTOMPADDING", (0, 0), (-1, -1), 2),
     ]
+    for j in numeric_cols:
+        cmds.append(("ALIGN", (j, 1), (j, -1), "RIGHT"))
     if zebra:
         for i in range(1, len(rows)):
             if i % 2 == 0:
@@ -591,7 +601,7 @@ def _status_cards_table(cards: list[dict[str, Any]]) -> Table:
     if len(cards) < 4:
         # pad so cover always shows four slots
         keys = ["growth", "drought", "flood", "harvest"]
-        titles = ["当前长势", "干旱风险", "洪涝风险", "收获状态"]
+        titles = ["当前长势", "水分状态", "洪涝监测", "成熟·收获"]
         by_key = {c.get("key"): c for c in cards}
         cards = [
             by_key.get(
@@ -648,7 +658,7 @@ def _evidence_cards_table(cards: list[dict[str, Any]]) -> Table:
     styles = _styles()
     cells: list[Any] = []
     for card in cards[:4]:
-        title = Paragraph(_esc(f"【{card.get('title') or ''}】"), styles["h2"])
+        title = Paragraph(_esc(str(card.get("title") or "")), styles["h2"])
         body = Paragraph(_esc(card.get("body") or "—"), styles["small"])
         inner = Table([[title], [body]], colWidths=[86 * mm])
         inner.setStyle(
@@ -826,7 +836,7 @@ def _factor_cards_row(
     col_w = (_CONTENT_W - 2 * gap) / 3
     cards = [
         _panel_card(
-            "证据较强",
+            "已观察到",
             strong or ["程序未列出更强因果；以下仅作提示。"],
             header_bg="#c8e6c9",
             body_bg="#e8f5e9",
@@ -836,17 +846,17 @@ def _factor_cards_row(
             title_color="#1b5e20",
         ),
         _panel_card(
-            "证据中等",
+            "较可能",
             mid or ["—"],
-            header_bg="#ffe082",
-            body_bg="#fff8e1",
-            border="#ffb300",
+            header_bg="#ffffff",
+            body_bg="#ffffff",
+            border="#1b4332",
             width=col_w,
             styles=styles,
             title_color="#e65100",
         ),
         _panel_card(
-            "证据不足",
+            "暂不能判断",
             weak
             or [
                 "天气、播种、品种、土壤、产量、墒情均未由本系统观测，不能认定。"
@@ -887,39 +897,39 @@ def _action_cards_row(
     col_w = (_CONTENT_W - 2 * gap) / 3
     cards = [
         _panel_card(
-            "现在",
+            "田间核查清单",
             now_items
             or ["结合田间确认当前冠层与墒情，不宜仅凭遥感安排作业。"],
-            header_bg="#b2dfdb",
-            body_bg="#e0f2f1",
-            border="#4db6ac",
+            header_bg="#ffffff",
+            body_bg="#ffffff",
+            border="#1b4332",
             width=col_w,
             styles=styles,
-            title_color="#00695c",
+            title_color="#1b4332",
         ),
         _panel_card(
-            "未来7天",
-            week_items or ["未来7天继续关注官方晴空景与田间脱水情况。"],
-            header_bg="#bbdefb",
-            body_bg="#e3f2fd",
-            border="#64b5f6",
+            "7日监测",
+            week_items or ["未来7天关注墒情与植株脱水，结合气象安排农事。"],
+            header_bg="#ffffff",
+            body_bg="#ffffff",
+            border="#1b4332",
             width=col_w,
             styles=styles,
-            title_color="#1565c0",
+            title_color="#1b4332",
         ),
         _panel_card(
-            "下一季",
+            "下一季农艺",
             next_items
             or [
                 "基于本季遥感干旱/水分格局，下一季宜准备灌溉与排水能力，"
                 "并在拔节–抽雄、灌浆等关键阶段检查墒情；记录播种日期、品种与产量（需当地确认）。"
             ],
-            header_bg="#d1c4e9",
-            body_bg="#ede7f6",
-            border="#9575cd",
+            header_bg="#ffffff",
+            body_bg="#ffffff",
+            border="#1b4332",
             width=col_w,
             styles=styles,
-            title_color="#4527a0",
+            title_color="#1b4332",
         ),
     ]
     spaced = Table(
@@ -1071,6 +1081,233 @@ def _page_footer(canvas, doc) -> None:
     canvas.restoreState()
 
 
+
+def _confidence_bars(items: list[dict[str, Any]], styles: dict) -> Table:
+    """Four horizontal confidence bars with one-line program reasons."""
+    rows: list[list[Any]] = []
+    level_w = {"high": 0.92, "medium": 0.58, "low": 0.28, "高": 0.92, "中": 0.58, "低": 0.28}
+    level_color = {
+        "high": "#2e7d32",
+        "medium": "#ef6c00",
+        "low": "#9e9e9e",
+        "高": "#2e7d32",
+        "中": "#ef6c00",
+        "低": "#9e9e9e",
+    }
+    bar_w = 70 * mm
+    for it in items[:4]:
+        label = str(it.get("label") or it.get("key") or "—")
+        level = str(it.get("level_cn") or it.get("level") or "低")
+        reason = str(it.get("reason") or "—")
+        frac = level_w.get(str(it.get("level") or level), 0.28)
+        color = level_color.get(str(it.get("level") or level), "#9e9e9e")
+        filled = max(8 * mm, bar_w * frac)
+        empty = bar_w - filled
+        bar = Table([[""]], colWidths=[filled])
+        bar.setStyle(
+            TableStyle(
+                [
+                    ("BACKGROUND", (0, 0), (-1, -1), HexColor(color)),
+                    ("TOPPADDING", (0, 0), (-1, -1), 0),
+                    ("BOTTOMPADDING", (0, 0), (-1, -1), 0),
+                ]
+            )
+        )
+        track = Table([[bar, ""]], colWidths=[filled, empty])
+        track.setStyle(
+            TableStyle(
+                [
+                    ("BACKGROUND", (0, 0), (-1, -1), HexColor("#eceff1")),
+                    ("VALIGN", (0, 0), (-1, -1), "MIDDLE"),
+                    ("LEFTPADDING", (0, 0), (-1, -1), 0),
+                    ("RIGHTPADDING", (0, 0), (-1, -1), 0),
+                    ("TOPPADDING", (0, 0), (-1, -1), 0),
+                    ("BOTTOMPADDING", (0, 0), (-1, -1), 0),
+                ]
+            )
+        )
+        rows.append(
+            [
+                Paragraph(_esc(label), styles["small"]),
+                Paragraph(_esc(level), styles["small"]),
+                track,
+                Paragraph(_esc(reason), styles["small"]),
+            ]
+        )
+    t = Table(rows, colWidths=[22 * mm, 14 * mm, bar_w + 2 * mm, 70 * mm])
+    t.setStyle(
+        TableStyle(
+            [
+                ("VALIGN", (0, 0), (-1, -1), "MIDDLE"),
+                ("LEFTPADDING", (0, 0), (-1, -1), 2),
+                ("RIGHTPADDING", (0, 0), (-1, -1), 2),
+                ("TOPPADDING", (0, 0), (-1, -1), 3),
+                ("BOTTOMPADDING", (0, 0), (-1, -1), 3),
+                ("BOX", (0, 0), (-1, -1), 0.35, HexColor("#c5d5c8")),
+                ("BACKGROUND", (0, 0), (-1, -1), HexColor("#fbfdfb")),
+            ]
+        )
+    )
+    return t
+
+
+def _placeholder_panel(text: str, styles: dict, *, height_mm: float = 42) -> Table:
+    body = Paragraph(_esc(text), styles["caption"])
+    t = Table([[body]], colWidths=[_CONTENT_W / 2 - 2 * mm], rowHeights=[height_mm * mm])
+    t.setStyle(
+        TableStyle(
+            [
+                ("BACKGROUND", (0, 0), (-1, -1), HexColor("#f5f7f6")),
+                ("BOX", (0, 0), (-1, -1), 0.45, HexColor("#b0bec5")),
+                ("ALIGN", (0, 0), (-1, -1), "CENTER"),
+                ("VALIGN", (0, 0), (-1, -1), "MIDDLE"),
+                ("LEFTPADDING", (0, 0), (-1, -1), 6),
+                ("RIGHTPADDING", (0, 0), (-1, -1), 6),
+            ]
+        )
+    )
+    return t
+
+
+def _try_image(path_or_url: Any, *, max_w: float, max_h: float) -> Any | None:
+    if not path_or_url:
+        return None
+    p = Path(str(path_or_url))
+    if not p.exists():
+        return None
+    try:
+        img = Image(str(p))
+        img._restrictSize(max_w, max_h)
+        return img
+    except Exception:
+        return None
+
+
+def _dual_visual_row(facts: dict[str, Any], styles: dict) -> Table:
+    spatial = facts.get("spatial") or {}
+    rgb = _try_image(
+        spatial.get("rgb_local_path") or spatial.get("latest_rgb_path"),
+        max_w=_CONTENT_W / 2 - 4 * mm,
+        max_h=48 * mm,
+    )
+    ndvi = _try_image(
+        spatial.get("ndvi_local_path") or spatial.get("latest_ndvi_path"),
+        max_w=_CONTENT_W / 2 - 4 * mm,
+        max_h=48 * mm,
+    )
+    left = rgb or _placeholder_panel("空间图预留，当前版本暂无栅格结果", styles, height_mm=48)
+    right = ndvi or _placeholder_panel("空间图预留，当前版本暂无栅格结果", styles, height_mm=48)
+    grid = Table(
+        [
+            [left, right],
+            [
+                Paragraph("最新真彩（边界叠加，如有）", styles["caption"]),
+                Paragraph("最新 NDVI（边界叠加，如有）", styles["caption"]),
+            ],
+        ],
+        colWidths=[_CONTENT_W / 2, _CONTENT_W / 2],
+    )
+    grid.setStyle(
+        TableStyle(
+            [
+                ("VALIGN", (0, 0), (-1, -1), "TOP"),
+                ("ALIGN", (0, 0), (-1, -1), "CENTER"),
+                ("LEFTPADDING", (0, 0), (-1, -1), 2),
+                ("RIGHTPADDING", (0, 0), (-1, -1), 2),
+            ]
+        )
+    )
+    return grid
+
+
+def _yoy_visual(yoy: dict[str, Any], styles: dict) -> Table:
+    this_p = yoy.get("this_peak") or {}
+    prior_p = yoy.get("prior_peak") or {}
+    # fall back to nested shapes used by compute_yoy
+    if not this_p and yoy.get("this_ndvi_peak"):
+        this_p = yoy.get("this_ndvi_peak") or {}
+    shift = yoy.get("peak_date_shift") or {}
+    left = [
+        Paragraph("2026 峰值", styles["card_h"]),
+        Paragraph(
+            f"{_esc(this_p.get('value') if isinstance(this_p, dict) else '—')} @ "
+            f"{_esc((this_p or {}).get('date') if isinstance(this_p, dict) else '—')}",
+            styles["body"],
+        ),
+    ]
+    # compute_yoy stores differently — handle both
+    this_date = yoy.get("this_peak_date") or (this_p.get("date") if isinstance(this_p, dict) else None)
+    this_val = yoy.get("this_peak_value") or (this_p.get("value") if isinstance(this_p, dict) else None)
+    prior_date = yoy.get("prior_peak_date") or (prior_p.get("date") if isinstance(prior_p, dict) else None)
+    prior_val = yoy.get("prior_peak_value") or (prior_p.get("value") if isinstance(prior_p, dict) else None)
+    # Also from nested report facts
+    if this_date is None and isinstance(yoy.get("this"), dict):
+        peak = (yoy.get("this") or {}).get("ndvi_peak") or {}
+        this_date, this_val = peak.get("date"), peak.get("value")
+    card_l = _panel_card(
+        "2026 峰值",
+        [f"{this_val if this_val is not None else '—'} @ {this_date or '—'}"],
+        header_bg="#ffffff",
+        body_bg="#ffffff",
+        border="#1b4332",
+        width=_CONTENT_W / 2 - 3 * mm,
+        styles=styles,
+        title_color="#1b4332",
+    )
+    card_r = _panel_card(
+        "2025 峰值",
+        [f"{prior_val if prior_val is not None else '—'} @ {prior_date or '—'}"],
+        header_bg="#ffffff",
+        body_bg="#ffffff",
+        border="#1565c0",
+        width=_CONTENT_W / 2 - 3 * mm,
+        styles=styles,
+        title_color="#1565c0",
+    )
+    row = Table([[card_l, card_r]], colWidths=[_CONTENT_W / 2, _CONTENT_W / 2])
+    row.setStyle(TableStyle([("VALIGN", (0, 0), (-1, -1), "TOP")]))
+    note = Paragraph(
+        f"程序计算：{_esc(shift.get('label') or '峰值日期对比不可用')}。"
+        "峰值日期提前/推后 ≠ 物候进程提前相应天数（例如提前35天），不得据此推断播种或积温。",
+        styles["small"],
+    )
+    return KeepTogether([row, Spacer(1, 2 * mm), note])
+
+
+def _brand_appendix_header(title: str, styles: dict) -> Table:
+    t = Table([[Paragraph(_esc(title), styles["card_title"])]], colWidths=[_CONTENT_W])
+    t.setStyle(
+        TableStyle(
+            [
+                ("BACKGROUND", (0, 0), (-1, -1), HexColor("#1b4332")),
+                ("LEFTPADDING", (0, 0), (-1, -1), 6),
+                ("RIGHTPADDING", (0, 0), (-1, -1), 6),
+                ("TOPPADDING", (0, 0), (-1, -1), 5),
+                ("BOTTOMPADDING", (0, 0), (-1, -1), 5),
+            ]
+        )
+    )
+    return t
+
+
+def _status_chip(text: str, *, bg: str, styles: dict) -> Table:
+    cell = Paragraph(_esc(text), styles["chip"])
+    t = Table([[cell]], colWidths=[40 * mm])
+    t.setStyle(
+        TableStyle(
+            [
+                ("BACKGROUND", (0, 0), (-1, -1), HexColor(bg)),
+                ("BOX", (0, 0), (-1, -1), 0.3, HexColor("#90a4ae")),
+                ("LEFTPADDING", (0, 0), (-1, -1), 4),
+                ("RIGHTPADDING", (0, 0), (-1, -1), 4),
+                ("TOPPADDING", (0, 0), (-1, -1), 2),
+                ("BOTTOMPADDING", (0, 0), (-1, -1), 2),
+            ]
+        )
+    )
+    return t
+
+
 def render_season_growth_pdf(
     *,
     facts: dict[str, Any],
@@ -1080,6 +1317,7 @@ def render_season_growth_pdf(
     materials_meta: list[dict[str, Any]] | None,
     out_path: Path | str,
 ) -> Path:
+    """Render exactly 10 product pages (Round-2 layout)."""
     _register_fonts()
     styles = _styles()
     out = Path(out_path)
@@ -1101,11 +1339,12 @@ def render_season_growth_pdf(
     evidence_cards = list(facts.get("evidence_cards") or [])
     yoy = facts.get("yoy") or {}
     program_core = facts.get("program_core_conclusion")
-    program_conclusions = list(facts.get("program_conclusions") or [])
+    program_conclusions_list = list(facts.get("program_conclusions") or [])
     disclaimer = facts.get("disclaimer") or FOOTER_DISCLAIMER
     ai = ai or {}
     charts = _resolve_chart_paths(chart_paths, chart_path)
     now = datetime.now(CST).strftime("%Y-%m-%d %H:%M")
+    spatial = facts.get("spatial") or {}
 
     doc = SimpleDocTemplate(
         str(out),
@@ -1118,34 +1357,27 @@ def render_season_growth_pdf(
     )
     story: list[Any] = []
 
-    # ── P1 Cover + status ──
-    story.append(Spacer(1, 6 * mm))
-    story.append(Paragraph("生育期长势分析报告", styles["cover_title"]))
+    # ── P1 地块当前状态总览 ──
+    story.append(Spacer(1, 3 * mm))
+    story.append(Paragraph("地块当前状态总览", styles["cover_title"]))
     story.append(
-        Paragraph("遥感长势 · 水分 · 灾害 · 收获监测", styles["cover_subtitle"])
+        Paragraph("遥感长势 · 水分 · 洪涝 · 成熟监测（程序事实 + AI 谨慎解读）", styles["cover_subtitle"])
     )
-    story.append(Spacer(1, 3 * mm))
+    story.append(Spacer(1, 2 * mm))
     field_name = field.get("field_name") or "地块"
-    story.append(Paragraph(_esc(field_name), styles["cover_field"]))
+    season_label = window.get("label") or ""
+    window_s = f"{window.get('start_date') or '—'} ~ {window.get('end_date') or '—'}"
+    if season_label:
+        window_s += f"（{season_label}）"
+    meta_line = (
+        f"{field_name} · 编号 {field.get('land_id') or '—'} · "
+        f"{_fmt_area(field.get('area_ha'))} · {_crops_label(window, field)} · "
+        f"{window_s} · 报告 {now}"
+    )
+    story.append(Paragraph(_esc(meta_line), styles["small_c"]))
     story.append(Spacer(1, 3 * mm))
-
-    season_label = window.get("label") or (
-        f"{window.get('start_date')} ~ {window.get('end_date')}"
-    )
-    window_s = (
-        f"{window.get('start_date') or '—'} ~ {window.get('end_date') or '—'}"
-        + (f"（{season_label}）" if window.get("label") else "")
-    )
-    meta_rows = [
-        ("地块名称", str(field_name)),
-        ("地块编号", str(field.get("land_id") or "—")),
-        ("面积", _fmt_area(field.get("area_ha"))),
-        ("作物", _crops_label(window, field)),
-        ("监测窗口", window_s),
-        ("报告时间", now),
-    ]
-    story.append(_meta_table(meta_rows))
-    story.append(Spacer(1, 5 * mm))
+    story.append(_dual_visual_row(facts, styles))
+    story.append(Spacer(1, 3 * mm))
     story.append(_status_cards_table(status_cards))
     story.append(Spacer(1, 2 * mm))
     story.append(
@@ -1158,18 +1390,18 @@ def render_season_growth_pdf(
     )
     story.append(PageBreak())
 
-    # ── P2 综合研判 ──
-    story.append(Paragraph("一、综合研判", styles["h1"]))
+    # ── P2 本季综合研判 ──
+    story.append(Paragraph("本季综合研判", styles["h1"]))
     core = ai.get("core_conclusion") or program_core or "（程序事实已生成）"
-    story.append(_highlight_box("【核心结论】", str(core), styles))
+    story.append(_highlight_box("核心判断", str(core), styles))
     story.append(Spacer(1, 3 * mm))
-    story.append(Paragraph("【关键证据】", styles["h2"]))
+    story.append(Paragraph("关键证据", styles["h2"]))
     if evidence_cards:
         story.append(_evidence_cards_table(evidence_cards))
     else:
         story.append(Paragraph("（无程序证据卡）", styles["small"]))
     story.append(Spacer(1, 3 * mm))
-    story.append(Paragraph("【可信度】", styles["h2"]))
+    story.append(Paragraph("判断可信度", styles["h2"]))
     conf_items = list(confidence.get("items") or [])
     if not conf_items:
         for key in ("growth", "drought", "flood", "harvest"):
@@ -1177,348 +1409,335 @@ def render_season_growth_pdf(
             if isinstance(block, dict):
                 conf_items.append(block)
     if conf_items:
-        conf_rows = [["主题", "置信度", "依据（程序规则）"]]
-        for it in conf_items:
-            conf_rows.append(
-                [
-                    str(it.get("label") or it.get("key") or "—"),
-                    str(it.get("level_cn") or it.get("level") or "—"),
-                    str(it.get("reason") or "—"),
-                ]
-            )
-        story.append(
-            _table(conf_rows, col_widths=[28 * mm, 22 * mm, 128 * mm], numeric_cols=set())
-        )
+        story.append(_confidence_bars(conf_items, styles))
     else:
         story.append(Paragraph("（可信度块未生成）", styles["small"]))
     story.append(Spacer(1, 3 * mm))
+    story.append(Paragraph("智能研判", styles["h2"]))
     synthesis = ai.get("synthesis") or ai.get("interpretation") or ""
     if not synthesis:
         synthesis = (
             program_core
             or "大模型未启用。以下仅列程序事实，不作天气/播种/产量推断。"
         )
-    story.append(_highlight_box("【AI综合解读】", str(synthesis), styles))
-    if ai.get("llm_configured") is False:
-        story.append(
-            Paragraph(
-                "说明：未配置 BAILIAN_API_KEY，解读章节为占位提示，数值均来自程序计算。",
-                styles["small"],
-            )
-        )
+    story.append(_highlight_box("智能研判", str(synthesis), styles))
     story.append(PageBreak())
 
-    # ── P3 curves ──
-    story.append(Paragraph("二、长势与水分曲线", styles["h1"]))
+    # ── P3 长势与水分变化 ──
+    story.append(Paragraph("长势与水分变化", styles["h1"]))
     _chart_block(
         story,
         path=charts.get("ndvi_ndmi"),
-        width_mm=176,
-        height_mm=82,
-        caption="图1  NDVI / NDMI 长势与水分：实线仅连接官方/可靠点；浅灰空心点为不可靠，不参与趋势线。"
-        "色带为日历物候估计（非实测播种）。关注峰值前后绿度变化与中后期回落。",
-        missing="窗口内无足够 NDVI/NDMI 点，未生成曲线图。",
+        width_mm=170,
+        height_mm=72,
+        caption="图1 NDVI（粗实线）/ NDMI（细虚线）：不可靠点浅空心不入趋势；底部色条为干旱事件。",
+        missing="（NDVI/NDMI 曲线未生成）",
         styles=styles,
     )
     _chart_block(
         story,
         path=charts.get("s1_vv"),
-        width_mm=176,
-        height_mm=64,
-        caption="图2  Sentinel-1 VV 洪涝监测：阈值线 -17.0 / -15.0 dB；关注超阈轨道日，须田间复核积水。",
-        missing="窗口内无 S1 VV 数据，未生成洪涝曲线图。",
+        width_mm=170,
+        height_mm=52,
+        caption="图2 Sentinel-1 VV：阈值 -17.0 / -15.0 dB；橙色为关注。监测期未形成明确地表积水型洪涝信号。",
+        missing="（S1 VV 曲线未生成）",
         styles=styles,
     )
-    story.append(Paragraph("【AI时序解读】", styles["h2"]))
-    bullets = list(ai.get("timeline_bullets") or [])
-    if not bullets and ai.get("timeline_notes"):
-        bullets = [ai.get("timeline_notes")]
-    if bullets:
-        _bullets(story, bullets[:5], styles)
-    else:
-        story.append(
-            Paragraph("（无 AI 时序解读；请以图1/图2 与程序时间线为准。）", styles["small"])
-        )
-    story.append(PageBreak())
-
-    # ── P4 timeline + YoY ──
-    story.append(Paragraph("三、生育期时间线", styles["h1"]))
-    monthly_notes = list(ai.get("monthly_notes") or [])
-    if timeline:
-        tl_rows = [["时段", "作物阶段（估计）", "S2长势", "水分", "S1洪涝", "AI判读"]]
-        for i, row in enumerate(timeline):
-            note = monthly_notes[i] if i < len(monthly_notes) else "—"
-            tl_rows.append(
-                [
-                    str(row.get("period_label") or row.get("month") or "—"),
-                    str(row.get("crop_stage_estimate") or "生育阶段（估计）"),
-                    str(row.get("s2_growth") or f"S2 {row.get('s2_count', 0)} 景"),
-                    str(row.get("moisture") or "—"),
-                    str(row.get("s1_flood") or "—"),
-                    str(note),
-                ]
+    story.append(Paragraph("按月解读（至多两行）", styles["h2"]))
+    month_notes = list(ai.get("monthly_notes") or ai.get("timeline_bullets") or [])
+    for i, row in enumerate(timeline[:4]):
+        label = row.get("period_label") or row.get("month") or f"{i+1}月"
+        note = ""
+        if i < len(month_notes):
+            note = str(month_notes[i])
+        else:
+            note = (
+                f"{label}：{row.get('s2_growth') or '—'}；"
+                f"水分 {row.get('moisture') or '—'}；{row.get('s1_flood') or '—'}"
             )
-        story.append(
-            _table(
-                tl_rows,
-                col_widths=[18 * mm, 32 * mm, 38 * mm, 32 * mm, 28 * mm, 30 * mm],
-            )
-        )
+        # max ~2 lines
+        if len(note) > 90:
+            note = note[:89] + "…"
+        story.append(Paragraph(f"• {_esc(note)}", styles["bullet"]))
+    if int(flood.get("flood_scene_count") or 0) <= 0:
         story.append(
             Paragraph(
-                "作物阶段为日历典型估计，不是实测播种或田间物候。",
+                "监测期未形成明确地表积水型洪涝信号（程序）。",
                 styles["small"],
             )
         )
-    else:
-        story.append(Paragraph("无按月时间线事实。", styles["body"]))
-
-    story.append(Paragraph("【年度对比】", styles["h2"]))
-    shift = yoy.get("peak_date_shift") or {}
-    yoy_rows = [
-        ["项目", "本年", "上年同期"],
-        [
-            "窗口",
-            f"{window.get('start_date') or '—'} ~ {window.get('end_date') or '—'}",
-            f"{yoy.get('prior_start') or '—'} ~ {yoy.get('prior_end') or '—'}",
-        ],
-        [
-            "NDVI 峰值",
-            f"{_fmt(yoy.get('this_peak_value'), 4)}（{yoy.get('this_peak_date') or '—'}）",
-            f"{_fmt(yoy.get('prior_peak_value'), 4)}（{yoy.get('prior_peak_date') or '—'}）",
-        ],
-        [
-            "峰值日期差",
-            str(shift.get("label") or "—"),
-            "仅比较峰值日期，不推断生育进程",
-        ],
-        [
-            "NDVI 均值",
-            _fmt(yoy.get("this_ndvi_mean"), 4),
-            _fmt(yoy.get("prior_ndvi_mean"), 4),
-        ],
-        [
-            "可用点数",
-            str(yoy.get("this_point_count") if yoy.get("this_point_count") is not None else "—"),
-            str(yoy.get("prior_point_count") if yoy.get("prior_point_count") is not None else "—"),
-        ],
-        [
-            "官方可用景",
-            str(yoy.get("this_official_count") if yoy.get("this_official_count") is not None else "—"),
-            str(yoy.get("prior_official_count") if yoy.get("prior_official_count") is not None else "—"),
-        ],
-    ]
-    story.append(
-        _table(yoy_rows, col_widths=[36 * mm, 71 * mm, 71 * mm], numeric_cols={1, 2})
-    )
-    story.append(Spacer(1, 2 * mm))
-    if shift.get("label"):
-        yoy_ai = (
-            f"程序计算：{shift.get('label')}。"
-            "AI 仅描述峰值日期差异，不能据此写生育进程提前一个月或推断播种/积温。"
-        )
-    else:
-        yoy_ai = "上年同期峰值日期不足，无法做峰值日期对比。"
-    story.append(Paragraph(_esc(yoy_ai), styles["body"]))
-    story.append(Spacer(1, 2 * mm))
-    story.append(Paragraph("窗口覆盖摘要（程序）", styles["h2"]))
-    cover_rows = [["月份", "S2景数", "官方/可用", "S1景数", "干旱日", "洪涝", "关注"]]
-    for row in timeline:
-        cover_rows.append(
-            [
-                str(row.get("month") or "—"),
-                str(row.get("s2_count", 0)),
-                str(row.get("s2_official_count", "—")),
-                str(row.get("s1_count", 0)),
-                str(row.get("drought_days", 0)),
-                str(row.get("flood_count", 0)),
-                str(row.get("watch_count", 0)),
-            ]
-        )
-    if len(cover_rows) > 1:
-        story.append(
-            _table(
-                cover_rows,
-                col_widths=[28 * mm, 22 * mm, 26 * mm, 22 * mm, 22 * mm, 22 * mm, 22 * mm],
-                numeric_cols={1, 2, 3, 4, 5, 6},
-            )
-        )
-
-    # Drought-day highlight + key dates (program facts)
-    drought_days = list(drought.get("days") or [])
-    story.append(Spacer(1, 2.5 * mm))
-    story.append(Paragraph("【干旱日一览（程序）】", styles["h2"]))
-    if drought_days:
-        drows = [["日期", "干旱等级", "说明"]]
-        for d in drought_days[:16]:
-            cls = d.get("class")
-            drows.append(
-                [
-                    str(d.get("date") or "—"),
-                    str(drought_class_cn(cls)),
-                    "中后期偏干提示，需结合墒情确认"
-                    if str(d.get("date") or "")[5:7] in ("07", "08", "09")
-                    else "程序干旱分级",
-                ]
-            )
-        story.append(
-            _table(drows, col_widths=[36 * mm, 36 * mm, 106 * mm], numeric_cols=set())
-        )
-        if len(drought_days) > 16:
-            story.append(
-                Paragraph(
-                    f"注：共 {len(drought_days)} 个干旱日，表中展示前 16 条。",
-                    styles["small"],
-                )
-            )
-    else:
-        story.append(Paragraph("窗口内无程序干旱日记录。", styles["body"]))
-
-    key_dates = program_key_dates(ndvi=ndvi, drought=drought, harvest=harvest)
-    story.append(Spacer(1, 2 * mm))
-    story.append(Paragraph("【本季关键日期】", styles["h2"]))
-    if key_dates:
-        krows = [["日期", "事件", "详情"]]
-        for kd in key_dates:
-            krows.append(
-                [str(kd.get("date") or "—"), str(kd.get("label") or "—"), str(kd.get("detail") or "—")]
-            )
-        story.append(
-            _table(krows, col_widths=[36 * mm, 46 * mm, 96 * mm], numeric_cols=set())
-        )
-    else:
-        story.append(Paragraph("暂无关键日期可汇总。", styles["small"]))
-
-    # Monthly narrative room (AI bullets already on P3; repeat short notes if present)
-    if monthly_notes:
-        story.append(Spacer(1, 2 * mm))
-        story.append(Paragraph("【按月AI判读（补充）】", styles["h2"]))
-        for i, note in enumerate(monthly_notes[:6]):
-            label = "—"
-            if i < len(timeline):
-                label = str(timeline[i].get("period_label") or timeline[i].get("month") or "—")
-            story.append(Paragraph(f"• {_esc(label)}：{_esc(note)}", styles["bullet"]))
-
     story.append(PageBreak())
 
-    # ── P5 analysis + actions (card layout) ──
-    story.append(Paragraph("四、综合结论与建议", styles["h1"]))
-    story.append(Paragraph("【综合结论】", styles["h2"]))
-    conclusions = list(ai.get("conclusions") or []) or program_conclusions
-    conclusion_items = _items_from_value(conclusions, max_items=4)
-    if conclusion_items:
-        story.append(_conclusion_pills(conclusion_items, styles))
+    # ── P4 生育期关键时间线 ──
+    story.append(Paragraph("生育期关键时间线", styles["h1"]))
+    story.append(
+        Paragraph(
+            "按月横向故事线。作物阶段为日历估计，不是实测播种。已移除窗口覆盖表与全部干旱日一览。",
+            styles["small"],
+        )
+    )
+    story.append(Spacer(1, 2 * mm))
+    # horizontal month story as 4 cards
+    month_cards = []
+    for row in timeline[:4]:
+        body = [
+            str(row.get("crop_stage_estimate") or "—"),
+            str(row.get("s2_growth") or "—"),
+            f"水分 {row.get('moisture') or '—'}",
+            str(row.get("s1_flood") or "—"),
+        ]
+        month_cards.append(
+            _panel_card(
+                str(row.get("period_label") or row.get("month") or "月"),
+                body,
+                header_bg="#ffffff",
+                body_bg="#ffffff",
+                border="#1b4332",
+                width=(_CONTENT_W - 6 * mm) / 4,
+                styles=styles,
+                title_color="#1b4332",
+            )
+        )
+    while len(month_cards) < 4:
+        month_cards.append("")
+    story.append(
+        Table([month_cards], colWidths=[(_CONTENT_W - 6 * mm) / 4] * 4)
+    )
+    story.append(Spacer(1, 4 * mm))
+    story.append(Paragraph("年度峰值对比（仅峰值日期）", styles["h2"]))
+    story.append(_yoy_visual(yoy, styles))
+    story.append(Spacer(1, 3 * mm))
+    story.append(Paragraph("本季关键日期（程序）", styles["h2"]))
+    key_dates = program_key_dates(ndvi=ndvi, drought=drought, harvest=harvest)
+    if key_dates:
+        kd_rows = [["日期", "事件", "详情"]]
+        for kd in key_dates[:8]:
+            kd_rows.append(
+                [
+                    str(kd.get("date") or "—"),
+                    str(kd.get("label") or kd.get("event") or "—"),
+                    str(kd.get("detail") or "—"),
+                ]
+            )
+        story.append(_table(kd_rows, col_widths=[32 * mm, 40 * mm, 106 * mm]))
     else:
-        story.append(Paragraph("（无综合结论）", styles["body"]))
+        story.append(Paragraph("（无关键日期）", styles["small"]))
+    story.append(PageBreak())
 
-    story.append(Spacer(1, 2 * mm))
-    story.append(Paragraph("【可能影响因素】", styles["h2"]))
-    strong = _items_from_value(ai.get("factors_strong"), max_items=4)
-    mid = _items_from_value(
-        ai.get("factors_mid") or ai.get("causes_ranked"), max_items=4
+    # ── P5 空间长势与异常区域 ──
+    story.append(Paragraph("空间长势与异常区域", styles["h1"]))
+    story.append(
+        Paragraph(
+            "当前版本暂未生成地块内部空间分级统计",
+            styles["body"],
+        )
     )
-    weak = _items_from_value(ai.get("factors_weak"), max_items=4)
-    story.append(_factor_cards_row(strong, mid, weak, styles))
+    story.append(Spacer(1, 2 * mm))
+    story.append(
+        Paragraph(
+            "当前暂无可靠的空间异常聚集结论",
+            styles["body"],
+        )
+    )
+    story.append(Spacer(1, 4 * mm))
+    rgb_shown = False
+    rgb_path = spatial.get("rgb_local_path") or spatial.get("latest_rgb_path")
+    rgb_url = spatial.get("rgb_url")
+    img = _try_image(rgb_path, max_w=_CONTENT_W, max_h=90 * mm)
+    if img is not None:
+        story.append(img)
+        story.append(Paragraph("最新真彩预览（如有边界）", styles["caption"]))
+        rgb_shown = True
+    elif rgb_url:
+        story.append(
+            _placeholder_panel(
+                "已登记 rgb_url，但本版 PDF 未下载栅格预览；空间分级仍未生成。",
+                styles,
+                height_mm=70,
+            )
+        )
+        rgb_shown = True
+    if not rgb_shown:
+        story.append(
+            _placeholder_panel(
+                "空间图预留，当前版本暂无栅格结果",
+                styles,
+                height_mm=70,
+            )
+        )
+    story.append(Spacer(1, 4 * mm))
+    story.append(
+        Paragraph(
+            "说明：不编造分区百分比或东南象限异常；待像素级空间统计就绪后填入本页预留版式。",
+            styles["small"],
+        )
+    )
+    story.append(PageBreak())
 
-    story.append(Spacer(1, 2.5 * mm))
-    story.append(Paragraph("【当前建议】", styles["h2"]))
-    now_items = _items_from_value(
-        ai.get("actions_now")
-        or "结合田间确认当前冠层与墒情，不宜仅凭遥感安排作业。",
-        max_items=5,
+    # ── P6 风险成因 ──
+    story.append(Paragraph("风险成因", styles["h1"]))
+    strong = _items_from_value(ai.get("factors_strong"))
+    mid = _items_from_value(ai.get("factors_mid"))
+    weak = _items_from_value(ai.get("factors_weak"))
+    # Program facts only in 已观察到
+    observed = []
+    if drought.get("drought_scene_count"):
+        observed.append(
+            f"程序干旱景 {drought.get('drought_scene_count')}："
+            f"{format_drought_counts(drought.get('counts'))}"
+        )
+    if int(flood.get("flood_scene_count") or 0) == 0 and scenes.get("s1_count"):
+        observed.append(
+            f"S1 {scenes.get('s1_count')} 景未检出洪涝："
+            f"{format_flood_counts(flood.get('counts'))}"
+        )
+    peak = ndvi.get("peak") or {}
+    latest = ndvi.get("latest") or {}
+    if peak.get("date") and latest.get("date"):
+        observed.append(
+            f"NDVI 峰值 {peak.get('date')}（{_fmt(peak.get('value'), 3)}）→ "
+            f"最新 {latest.get('date')}（{_fmt(latest.get('value'), 3)}）"
+        )
+    if not observed:
+        observed = strong[:2] or ["程序可核验事实不足，仅保留谨慎提示。"]
+    # Filter banned phrases from AI mid/weak
+    banned = ("温光", "降水偏少", "排水良好", "排水条件良好", "无渍涝隐患", "生物量达标")
+    mid = [x for x in mid if not any(b in x for b in banned)] or [
+        "九月绿度回落与干旱等级共现时，成熟脱水与天气偏干可能同时存在（不能定量）。"
+    ]
+    weak = [x for x in weak if not any(b in x for b in banned)] or [
+        "天气、播种、品种、土壤、产量、墒情均未由本系统观测，不能认定。"
+    ]
+    story.append(
+        _factor_cards_row(observed[:4], mid[:4], weak[:4], styles)
     )
-    week_items = _items_from_value(
-        ai.get("actions_week") or "未来7天继续关注官方晴空景与田间脱水情况。",
-        max_items=5,
+    story.append(Spacer(1, 4 * mm))
+    story.append(Paragraph("程序综合结论（非 AI 数字）", styles["h2"]))
+    conclusions = _items_from_value(ai.get("conclusions")) or program_conclusions_list
+    # strip banned
+    conclusions = [c for c in conclusions if not any(b in str(c) for b in banned)]
+    if conclusions:
+        story.append(_conclusion_pills([str(c) for c in conclusions[:4]], styles))
+    else:
+        story.append(Paragraph("（结论待生成）", styles["small"]))
+    story.append(PageBreak())
+
+    # ── P7 农事建议 ──
+    story.append(Paragraph("农事建议", styles["h1"]))
+    now_items = _items_from_value(ai.get("actions_now"))
+    week_items = _items_from_value(ai.get("actions_week"))
+    next_items = _items_from_value(ai.get("actions_next_season"))
+    # End-of-season records card
+    records = [
+        "记录实测播种日期、品种与产量，便于校准物候估计。",
+        "保留关键干旱/关注日期与田间照片，供下季对照。",
+    ]
+    # Rebuild 2x2 suggestion cards (unified white + brand)
+    gap = 3 * mm
+    col_w = (_CONTENT_W - gap) / 2
+    c1 = _panel_card(
+        "田间核查清单",
+        now_items or ["田间确认成熟度、倒伏与墒情；不宜仅凭遥感安排作业。"],
+        header_bg="#ffffff",
+        body_bg="#ffffff",
+        border="#1b4332",
+        width=col_w,
+        styles=styles,
+        title_color="#1b4332",
     )
-    next_season_fallback = program_next_season_actions(
-        drought=drought, flood=flood, harvest=harvest
+    c2 = _panel_card(
+        "7日监测",
+        week_items or ["关注墒情与植株脱水，结合气象安排农事。"],
+        header_bg="#ffffff",
+        body_bg="#ffffff",
+        border="#1b4332",
+        width=col_w,
+        styles=styles,
+        title_color="#1b4332",
     )
-    next_items = _items_from_value(
-        ai.get("actions_next_season") or next_season_fallback,
-        max_items=5,
+    c3 = _panel_card(
+        "季末记录",
+        records,
+        header_bg="#ffffff",
+        body_bg="#ffffff",
+        border="#1b4332",
+        width=col_w,
+        styles=styles,
+        title_color="#1b4332",
     )
-    story.append(_action_cards_row(now_items, week_items, next_items, styles))
-    story.append(Spacer(1, 2 * mm))
-    if harvest.get("status") == "detected" and str(harvest.get("confidence")) == "low":
+    c4 = _panel_card(
+        "下一季农艺",
+        next_items
+        or _items_from_value(
+            program_next_season_actions(drought=drought, flood=flood, harvest=harvest)
+        )
+        or ["下一季在拔节–抽雄、灌浆阶段安排墒情检查与灌溉准备；雨季维护排水。"],
+        header_bg="#ffffff",
+        body_bg="#ffffff",
+        border="#1b4332",
+        width=col_w,
+        styles=styles,
+        title_color="#1b4332",
+    )
+    story.append(
+        Table([[c1, c2], [c3, c4]], colWidths=[col_w, col_w])
+    )
+    story.append(Spacer(1, 4 * mm))
+    if harvest.get("status") == "detected":
         harvest_hint = (
             "收获注意：疑似进入成熟后期或收获准备阶段，需田间确认，不得作为立即收割依据。"
         )
     else:
         harvest_hint = "收获注意：收获安排须田间确认，不得作为立即收割依据。"
     story.append(_caution_banner(harvest_hint, styles))
-
-    story.append(Spacer(1, 2.5 * mm))
-    story.append(Paragraph("【需要补充的证据】", styles["h2"]))
-    gaps = _items_from_value(
-        ai.get("evidence_gaps") or ai.get("follow_up"), max_items=8
-    )
-    default_gaps = [
-        "实测播种日期与品种",
-        "土壤墒情或气象降水/蒸发",
-        "田间收获进度核实",
-        "产量与籽粒含水量（若需评估灾损）",
-    ]
-    story.append(_gap_chips(gaps or default_gaps, styles))
-
-    story.append(Spacer(1, 4 * mm))
-    story.append(Paragraph(_esc(disclaimer), styles["footer"]))
-    story.append(PageBreak())
-
-    # ── Farming risk page ──
-    story.append(Paragraph("五、农事风险与应对提示", styles["h1"]))
-    story.append(
-        Paragraph(
-            "以下提示基于本季程序计算的干旱/水分/收获格局，辅以 AI 短建议；"
-            "不作天气或产量断言，须结合当地确认。",
-            styles["small"],
-        )
-    )
-    risk = program_farming_risk_tips(
-        drought=drought, flood=flood, harvest=harvest, ndvi=ndvi
-    )
-    story.append(Spacer(1, 2 * mm))
-    story.append(Paragraph("【干旱与灌溉提示】", styles["h2"]))
-    _bullets(story, risk.get("drought_irrigation") or ["—"], styles)
-    # AI short tip from actions if agronomic
-    if now_items:
-        story.append(
-            Paragraph(
-                f"AI短提示：{_esc(now_items[0])}",
-                styles["small"],
-            )
-        )
-    story.append(Spacer(1, 2 * mm))
-    story.append(Paragraph("【降雨与排水提示】", styles["h2"]))
-    _bullets(story, risk.get("rain_drainage") or ["—"], styles)
-    if week_items:
-        story.append(
-            Paragraph(
-                f"AI短提示：{_esc(week_items[0])}",
-                styles["small"],
-            )
-        )
-    story.append(Spacer(1, 2 * mm))
-    story.append(Paragraph("【收获与成熟核查】", styles["h2"]))
-    _bullets(story, risk.get("harvest_maturity") or ["—"], styles)
     story.append(Spacer(1, 3 * mm))
-    story.append(
-        _caution_banner(
-            "农事安排须田间确认；低置信度收获信号不得作为立即收割依据。",
-            styles,
-        )
-    )
+    gaps = _items_from_value(ai.get("evidence_gaps"))
+    if gaps:
+        story.append(Paragraph("仍需补充的证据", styles["h2"]))
+        _bullets(story, gaps[:5], styles)
     story.append(PageBreak())
 
-    # ── Appendix ──
-    story.append(Paragraph("六、附录", styles["h1"]))
-
-    story.append(Paragraph("附录 A  Sentinel-2 逐景表", styles["h2"]))
+    # ── P8 技术附录 A S2 ──
+    story.append(_brand_appendix_header("技术附录 A · Sentinel-2 逐景表", styles))
+    story.append(Spacer(1, 2 * mm))
+    chip_row = Table(
+        [[
+            _status_chip(f"S2总景 {scenes.get('s2_count', '—')}", bg="#e8f5e9", styles=styles),
+            _status_chip(
+                f"官方/可用 {scenes.get('s2_official_count', '—')}",
+                bg="#e3f2fd",
+                styles=styles,
+            ),
+            _status_chip(
+                f"干旱景 {drought.get('drought_scene_count', '—')}",
+                bg="#fff3e0",
+                styles=styles,
+            ),
+            _status_chip(
+                format_drought_counts(drought.get("counts"))[:18],
+                bg="#fce4ec",
+                styles=styles,
+            ),
+        ]],
+        colWidths=[44.5 * mm] * 4,
+    )
+    story.append(chip_row)
+    story.append(Spacer(1, 2 * mm))
     if not s2_appendix:
         story.append(Paragraph("无 S2 逐景记录。", styles["body"]))
     else:
-        truncated = len(s2_appendix) > _APPENDIX_MAX_ROWS
-        rows_a = s2_appendix[:_APPENDIX_MAX_ROWS]
+        # Keep appendix A on a single page: prefer drought days then chronological.
+        s2_max = 26
+        drought_dates = {
+            str(d.get("date"))[:10]
+            for d in (drought.get("days") or [])
+            if d.get("date")
+        }
+        preferred = [r for r in s2_appendix if str(r.get("date") or "")[:10] in drought_dates]
+        rest = [r for r in s2_appendix if str(r.get("date") or "")[:10] not in drought_dates]
+        ordered = preferred + rest
+        truncated = len(ordered) > s2_max
+        rows_a = ordered[:s2_max]
         s2_rows = [["日期", "云量%", "质量", "干旱等级", "NDVI", "NDMI", "EVI", "MNDWI"]]
         for r in rows_a:
             cls = r.get("drought_class_cn") or drought_class_cn(r.get("drought_class"))
@@ -1549,30 +1768,83 @@ def render_season_growth_pdf(
                     22 * mm,
                 ],
                 numeric_cols={1, 4, 5, 6, 7},
+                header_bg="#1b4332",
             )
         )
+        # fix header text color for dark brand — recolor via note
         if truncated:
             story.append(
                 Paragraph(
-                    f"注：筛选后共 {len(s2_appendix)} 行，附录仅展示前 {_APPENDIX_MAX_ROWS} 行。",
+                    f"注：筛选后共 {len(s2_appendix)} 行，附录仅展示前 {len(rows_a)} 行（优先干旱日）。数值右对齐。",
                     styles["small"],
                 )
             )
         else:
             story.append(
                 Paragraph(
-                    "注：同日多景已按质量优选；已过滤 NDVI 缺失/为零的较差噪声行。",
+                    "注：同日多景已按质量优选；数值列右对齐。",
                     styles["small"],
                 )
             )
-
     story.append(PageBreak())
-    story.append(Paragraph("附录 B  Sentinel-1 逐景表", styles["h2"]))
+
+    # ── P9 技术附录 B S1 + overview cards ──
+    story.append(_brand_appendix_header("技术附录 B · Sentinel-1 逐景表", styles))
+    story.append(Spacer(1, 2 * mm))
+    s1_overview = Table(
+        [[
+            _panel_card(
+                "S1 景数",
+                [str(scenes.get("s1_count") or flood.get("scene_count") or 0)],
+                header_bg="#ffffff",
+                body_bg="#ffffff",
+                border="#1565c0",
+                width=(_CONTENT_W - 6 * mm) / 3,
+                styles=styles,
+                title_color="#1565c0",
+            ),
+            _panel_card(
+                "VV 中位数",
+                [str(flood.get("vv_median") if flood.get("vv_median") is not None else "—")],
+                header_bg="#ffffff",
+                body_bg="#ffffff",
+                border="#1565c0",
+                width=(_CONTENT_W - 6 * mm) / 3,
+                styles=styles,
+                title_color="#1565c0",
+            ),
+            _panel_card(
+                "洪涝状态",
+                [
+                    format_flood_status(flood.get("status")),
+                    format_flood_counts(flood.get("counts")),
+                ],
+                header_bg="#ffffff",
+                body_bg="#ffffff",
+                border="#1565c0",
+                width=(_CONTENT_W - 6 * mm) / 3,
+                styles=styles,
+                title_color="#1565c0",
+            ),
+        ]],
+        colWidths=[(_CONTENT_W - 6 * mm) / 3] * 3,
+    )
+    story.append(s1_overview)
+    story.append(Spacer(1, 3 * mm))
+    if int(flood.get("flood_scene_count") or 0) <= 0:
+        story.append(
+            Paragraph(
+                "监测期未形成明确地表积水型洪涝信号。",
+                styles["body"],
+            )
+        )
+    story.append(Spacer(1, 2 * mm))
     if not s1_appendix:
         story.append(Paragraph("无 S1 逐景记录。", styles["body"]))
     else:
-        truncated_b = len(s1_appendix) > _APPENDIX_MAX_ROWS
-        rows_b = s1_appendix[:_APPENDIX_MAX_ROWS]
+        s1_max = 18
+        truncated_b = len(s1_appendix) > s1_max
+        rows_b = s1_appendix[:s1_max]
         s1_rows = [["日期", "轨道", "VV (dB)", "VH (dB)", "洪涝等级"]]
         for r in rows_b:
             cls = r.get("flood_class_cn") or flood_class_cn(r.get("flood_class"))
@@ -1590,20 +1862,22 @@ def render_season_growth_pdf(
                 s1_rows,
                 col_widths=[32 * mm, 26 * mm, 32 * mm, 32 * mm, 40 * mm],
                 numeric_cols={1, 2, 3},
+                header_bg="#1565c0",
             )
         )
         if truncated_b:
             story.append(
                 Paragraph(
-                    f"注：去重后共 {len(s1_appendix)} 行，附录仅展示前 {_APPENDIX_MAX_ROWS} 行。",
+                    f"注：去重后共 {len(s1_appendix)} 行，附录仅展示前 {len(rows_b)} 行。",
                     styles["small"],
                 )
             )
         else:
-            story.append(Paragraph("注：同日多景已按较低 VV 保留一条。", styles["small"]))
-
+            story.append(Paragraph("注：同日多景已按较低 VV 保留一条；数值右对齐。", styles["small"]))
     story.append(PageBreak())
-    story.append(Paragraph("附录 C  判定方法", styles["h2"]))
+
+    # ── P10 方法 + 质量 + 声明 ──
+    story.append(Paragraph("方法与质量说明", styles["h1"]))
     method_rows = [
         ["类别", "说明"],
         ["光学干旱（S2）", methodology.get("drought") or "基于 agri_classify 干旱分类器。"],
@@ -1611,7 +1885,11 @@ def render_season_growth_pdf(
         ["传感器", methodology.get("sensors") or "Sentinel-2 / Sentinel-1"],
         [
             "曲线规则",
-            "趋势线只连接官方/可靠点；不可靠点以浅灰空心标记，不进入连线。",
+            "NDVI 粗实线、NDMI 细虚线；不可靠点浅空心不连线；干旱为底部事件条。",
+        ],
+        [
+            "水分月统计",
+            "按日去重后的官方/可用景分类汇总；与 drought.days 不一致时以场景重聚合为准。",
         ],
         [
             "物候",
@@ -1623,32 +1901,62 @@ def render_season_growth_pdf(
         ],
     ]
     story.append(_table(method_rows, col_widths=[32 * mm, 146 * mm], zebra=True))
-
-    story.append(Spacer(1, 2.5 * mm))
-    story.append(Paragraph("附录 D  质量说明", styles["h2"]))
-    quality_notes = [
-        f"数据来源：{facts.get('data_source') or '遥感产品'}；程序计算事实，AI 仅解读。",
-        f"S2 总景 {scenes.get('s2_count', '—')}，官方/可用 {scenes.get('s2_official_count', '—')}，"
-        f"晴空 {scenes.get('s2_clear_count', '—')}；S1 {scenes.get('s1_count', '—')} 景。",
-        f"干旱分级计数：{format_drought_counts(drought.get('counts'))}。",
-        f"洪涝状态：{format_flood_status(flood.get('status'))}；"
-        f"{format_flood_counts(flood.get('counts'))}。",
-        f"收获检测：{format_harvest_line(harvest)}。",
-        "不可靠光学点不进入干旱官方判定，也不进入图1趋势线。",
-    ]
-    _bullets(story, quality_notes, styles)
+    story.append(Spacer(1, 3 * mm))
+    story.append(Paragraph("质量卡片", styles["h2"]))
+    q_cards = Table(
+        [[
+            _panel_card(
+                "光学覆盖",
+                [
+                    f"S2 总景 {scenes.get('s2_count', '—')}",
+                    f"官方/可用 {scenes.get('s2_official_count', '—')}",
+                    f"晴空 {scenes.get('s2_clear_count', '—')}",
+                ],
+                header_bg="#ffffff",
+                body_bg="#ffffff",
+                border="#1b4332",
+                width=(_CONTENT_W - 6 * mm) / 3,
+                styles=styles,
+                title_color="#1b4332",
+            ),
+            _panel_card(
+                "干旱分级",
+                [format_drought_counts(drought.get("counts"))],
+                header_bg="#ffffff",
+                body_bg="#ffffff",
+                border="#c62828",
+                width=(_CONTENT_W - 6 * mm) / 3,
+                styles=styles,
+                title_color="#c62828",
+            ),
+            _panel_card(
+                "洪涝 / 收获",
+                [
+                    f"{format_flood_status(flood.get('status'))}；{format_flood_counts(flood.get('counts'))}",
+                    format_harvest_line(harvest),
+                ],
+                header_bg="#ffffff",
+                body_bg="#ffffff",
+                border="#1565c0",
+                width=(_CONTENT_W - 6 * mm) / 3,
+                styles=styles,
+                title_color="#1565c0",
+            ),
+        ]],
+        colWidths=[(_CONTENT_W - 6 * mm) / 3] * 3,
+    )
+    story.append(q_cards)
+    story.append(Spacer(1, 4 * mm))
+    story.append(Paragraph(_esc(disclaimer), styles["footer"]))
     mats = materials_meta or []
     if mats:
+        story.append(Spacer(1, 2 * mm))
         story.append(Paragraph("附加材料", styles["h2"]))
-        for m in mats:
+        for m in mats[:6]:
             line = f"• {_esc(m.get('filename'))}"
             if m.get("note"):
                 line += f"（{_esc(m.get('note'))}）"
-            elif m.get("ok"):
-                line += "（已提取/已登记）"
             story.append(Paragraph(line, styles["bullet"]))
-    else:
-        story.append(Paragraph("注：本次未上传附加材料。", styles["small"]))
 
     doc.build(story, onFirstPage=_page_footer, onLaterPages=_page_footer)
     return out

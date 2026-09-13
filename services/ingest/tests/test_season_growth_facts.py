@@ -274,9 +274,98 @@ class SeasonGrowthFactsTests(unittest.TestCase):
         self.assertIn("疑似进入成熟后期", compact["harvest"]["wording_hint"])
         self.assertIn("峰值日期", compact["ai_rules"]["yoy_only"])
 
+    def test_july_moisture_matches_usable_drought_days(self) -> None:
+        """July moisture must reflect deduped usable classes, not raw+good duplicates."""
+        # Same calendar date: official severe + non-official unreliable duplicate
+        rows = []
+        for d, ndvi, ndmi, official, q in [
+            ("2026-07-02", 0.80, 0.05, True, "good"),
+            ("2026-07-02", 0.10, 0.00, False, "bad"),  # duplicate noise
+            ("2026-07-05", 0.81, 0.04, True, "good"),
+            ("2026-07-05", 0.12, 0.01, False, "raw"),
+            ("2026-07-09", 0.78, 0.08, True, "good"),
+            ("2026-07-12", 0.82, 0.25, True, "good"),  # normal-ish
+            ("2026-07-15", 0.79, 0.22, True, "good"),
+            ("2026-07-20", 0.77, 0.20, True, "good"),
+            ("2026-07-25", 0.76, 0.18, True, "good"),
+            ("2026-06-10", 0.45, 0.15, True, "good"),
+            ("2026-08-10", 0.70, 0.12, True, "good"),
+        ]:
+            rows.append(
+                {
+                    "date": d,
+                    "scene_id": f"S2-{d}-{'off' if official else 'raw'}",
+                    "ndvi_avg": ndvi,
+                    "evi_avg": ndvi - 0.05,
+                    "mndwi_avg": -0.1,
+                    "ndmi_avg": ndmi,
+                    "official": official,
+                    "decloud_quality": q,
+                    "cloud_cover": 5.0 if official else 80.0,
+                    "parcel_cloud_cover_pct": 5.0 if official else 80.0,
+                    "cloud_pct": 5.0 if official else 80.0,
+                    "clear": official,
+                }
+            )
+        drought = _drought_summary(rows, season_months=(6, 7, 8, 9))
+        self.assertIn("usable_scene_classes", drought)
+        july_days = [d for d in drought["days"] if str(d["date"]).startswith("2026-07")]
+        # At least the three drought dates should survive dedupe if classified drought
+        # Force-check aggregation prefers usable over unreliable duplicates:
+        from app.reports.season_growth.facts import (
+            dedupe_usable_scene_classes,
+            count_classes_by_month,
+        )
+        # Inject known scene_classes with duplicate-date bug pattern
+        scene_classes = [
+            {"date": "2026-07-02", "class": "severe"},
+            {"date": "2026-07-02", "class": "unreliable"},
+            {"date": "2026-07-05", "class": "severe"},
+            {"date": "2026-07-05", "class": "unreliable"},
+            {"date": "2026-07-09", "class": "moderate"},
+            {"date": "2026-07-12", "class": "normal"},
+            {"date": "2026-07-15", "class": "normal"},
+            {"date": "2026-07-18", "class": "normal"},
+            {"date": "2026-07-20", "class": "normal"},
+            {"date": "2026-07-22", "class": "normal"},
+            {"date": "2026-07-25", "class": "normal"},
+            {"date": "2026-07-28", "class": "unreliable"},
+        ]
+        usable = dedupe_usable_scene_classes(scene_classes)
+        counts = count_classes_by_month(usable, "2026-07")
+        self.assertEqual(counts.get("severe"), 2)
+        self.assertEqual(counts.get("moderate"), 1)
+        self.assertNotIn("unreliable", {k for k, v in counts.items() if k == "unreliable" and v >= 7})
+        # unreliable only if no usable class that day — 07-28 only
+        self.assertEqual(counts.get("unreliable"), 1)
+        drought_forced = {
+            "scene_classes": scene_classes,
+            "usable_scene_classes": usable,
+            "days": [
+                {"date": "2026-07-02", "class": "severe"},
+                {"date": "2026-07-05", "class": "severe"},
+                {"date": "2026-07-09", "class": "moderate"},
+            ],
+            "counts": counts,
+        }
+        tl = _build_timeline(
+            start=date(2026, 6, 1),
+            end=date(2026, 9, 30),
+            s2_rows=rows,
+            s1_rows=[],
+            drought=drought_forced,
+            flood={"scenes": [], "counts": {}},
+            ndvi_ts=[{"date": r["date"], "value": r["ndvi_avg"], "official": r["official"]} for r in rows],
+            crops=["玉米"],
+            peak_month=7,
+        )
+        july = next(r for r in tl if r["month"] == "2026-07")
+        self.assertIn("重度2", july["moisture"])
+        self.assertIn("中度1", july["moisture"])
+        self.assertEqual(july["drought_days"], 3)
+        # Must NOT look like the old buggy "中度1 / 正常6 / 不可靠7"
+        self.assertNotRegex(july["moisture"], r"不可靠7")
 
-if __name__ == "__main__":
-    unittest.main()
 
     def test_next_season_agronomy_not_remote_ops(self) -> None:
         text = program_next_season_actions(
@@ -293,3 +382,6 @@ if __name__ == "__main__":
         self.assertTrue(("灌溉" in text) or ("墒情" in text))
         self.assertTrue(looks_like_remote_ops_advice("增加多源卫星或无人机补测频次"))
 
+
+if __name__ == "__main__":
+    unittest.main()

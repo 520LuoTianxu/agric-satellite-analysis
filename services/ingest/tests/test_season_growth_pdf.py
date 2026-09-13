@@ -43,7 +43,7 @@ def _rich_facts() -> dict:
     drought = {
         "drought_scene_count": 1,
         "counts": {"normal": 6, "mild": 1, "unreliable": 2},
-        "days": [{"date": "2026-08-20", "class": "mild"}],
+        "days": [{"date": "2026-08-20", "class": "mild"}, {"date": "2026-09-05", "class": "severe"}],
         "scene_classes": [
             {"date": "2026-06-05", "class": "normal"},
             {"date": "2026-08-20", "class": "mild"},
@@ -259,7 +259,7 @@ def _rich_ai() -> dict:
         "factors_weak": ["品种与播种未提供"],
         "actions_now": "田间确认成熟与脱水。\n检查灌溉设施。",
         "actions_week": "关注墒情变化。\n跟踪官方晴空景。",
-        "actions_next_season": "补充播种与气象资料。\n校准物候估计。",
+        "actions_next_season": "下一季在拔节–抽雄、灌浆阶段安排墒情检查与灌溉准备。\n记录播种日期与品种。",
         "evidence_gaps": ["实测播种日期", "土壤墒情", "气象降水记录"],
         "llm_configured": False,
     }
@@ -409,11 +409,17 @@ class SeasonGrowthPdfTests(unittest.TestCase):
             self.assertNotIn(b"{'unreliable'", data)
             self.assertNotIn(b"detected /", data)
             extracted = _pdf_text(path)
-            banned = ["生物量积累达标", "生物量达标", "立即收割", "生育进程提前一个月"]
+            banned = ["生物量积累达标", "生物量达标"]
             haystack = extracted + (facts.get("program_core_conclusion") or "")
             for phrase in banned:
                 self.assertNotIn(phrase, haystack)
                 self.assertNotIn(phrase.encode("utf-8"), data)
+            # 禁止用语仅允许出现在否定/免责表述中
+            self.assertNotIn("建议立即收割", haystack)
+            self.assertNotIn("请立即收割", haystack)
+            self.assertNotIn("立即收割。", haystack)
+            self.assertNotIn("生育进程提前一个月。", haystack)
+            self.assertNotIn("已生育进程提前一个月", haystack)
             # v2 layout: cover+研判+curves+timeline+actions (+ appendix)
             page_count = data.count(b"/Type /Page")
             self.assertGreaterEqual(page_count, 5)
@@ -470,12 +476,18 @@ class SeasonGrowthPdfTests(unittest.TestCase):
                 ]
             )
             self.assertIn("疑似进入成熟后期或收获准备阶段", hay + (facts.get("program_core_conclusion") or ""))
-            banned = ["立即收割", "生物量积累达标", "生物量达标"]
+            banned = ["生物量积累达标", "生物量达标"]
             for phrase in banned:
                 self.assertNotIn(phrase, extracted)
+            self.assertNotIn("建议立即收割", extracted)
+            self.assertNotIn("请立即收割", extracted)
             # Helpers used by the redesigned conclusion page.
             self.assertEqual(len(_items_from_value(ai["actions_now"])), 2)
             self.assertGreaterEqual(len(_items_from_value(ai["evidence_gaps"])), 2)
+            if "农事" in extracted or "长势" in extracted:
+                self.assertIn("农事风险", extracted)
+            for banned_rs in ("无人机", "多源卫星"):
+                self.assertNotIn(banned_rs, str(ai.get("actions_next_season") or ""))
 
 
 if __name__ == "__main__":

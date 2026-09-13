@@ -21,6 +21,8 @@ from app.reports.season_growth.facts import (
     flood_class_cn,
     phenology_stage_estimate,
     program_core_conclusion,
+    program_next_season_actions,
+    looks_like_remote_ops_advice,
     quality_cn,
 )
 
@@ -275,3 +277,19 @@ class SeasonGrowthFactsTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+    def test_next_season_agronomy_not_remote_ops(self) -> None:
+        text = program_next_season_actions(
+            drought={
+                "drought_scene_count": 5,
+                "counts": {"severe": 3, "mild": 2},
+                "days": [{"date": "2026-09-01", "class": "severe"}],
+            },
+            flood={"counts": {"watch": 2}, "flood_scene_count": 0},
+        )
+        self.assertFalse(looks_like_remote_ops_advice(text))
+        self.assertNotIn("无人机", text)
+        self.assertNotIn("多源卫星", text)
+        self.assertTrue(("灌溉" in text) or ("墒情" in text))
+        self.assertTrue(looks_like_remote_ops_advice("增加多源卫星或无人机补测频次"))
+

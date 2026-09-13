@@ -41,7 +41,13 @@ SYSTEM_PROMPT = """你是资深农学与遥感分析助手，撰写面向农户�
     - factors_strong / factors_mid / factors_weak：可能影响因素，按证据强度分三档（字符串数组）。证据不足档写「资料不足，不能认定…」。
     - actions_now / actions_week / actions_next_season：现在 / 未来7天 / 下一季建议。收获相关必须用「疑似…需田间确认」，禁止立即收割。
     - evidence_gaps：需要补充的证据（字符串数组）。
-12. 不要输出 one_liner / summary / evidence_bullets / 结论复述 等重复块。"""
+12. actions_next_season（下一季）必须是**实用农事/田间管理**建议，且紧扣本季程序事实：
+    - 若本季中后期多次干旱/偏干信号 → 建议下一季在拔节–抽雄、灌浆等关键阶段安排墒情检查与灌溉准备；检修灌溉能力。
+    - 若本季有关注/积水或高水分风险 → 建议维护沟渠排水、防范渍涝。
+    - 建议记录播种日期、品种与产量，便于校准物候解读。
+    - 必须写明「基于本季遥感格局提示，需结合当地确认」；不得编造天气/产量事实。
+    - **严禁**建议遥感作业改进：禁止写云量、无人机、多源卫星、补测频次、采样密度、雷达/卫星补测、提升遥感监测等。
+13. 不要输出 one_liner / summary / evidence_bullets / 结论复述 等重复块。"""
 
 _AI_LIST_KEYS = (
     "timeline_bullets",
@@ -150,6 +156,46 @@ def _clip(text: str | None, max_chars: int) -> str | None:
     return t[: max_chars - 1] + "…"
 
 
+
+def _program_next_season_from_facts(facts: dict[str, Any] | None) -> str:
+    """Build agronomic next-season placeholder from program facts (soft-fail safe)."""
+    try:
+        from app.reports.season_growth.facts import program_next_season_actions
+
+        facts = facts or {}
+        return program_next_season_actions(
+            drought=facts.get("drought") if isinstance(facts.get("drought"), dict) else {},
+            flood=facts.get("flood") if isinstance(facts.get("flood"), dict) else {},
+            harvest=facts.get("harvest") if isinstance(facts.get("harvest"), dict) else None,
+        )
+    except Exception:
+        return (
+            "基于本季遥感干旱/水分格局，下一季宜提前准备灌溉与排水能力，"
+            "并在拔节–抽雄、灌浆等关键阶段安排墒情检查；记录播种日期、品种与产量以便解读"
+            "（需结合当地确认）。"
+        )
+
+
+def _sanitize_next_season(
+    text: str | None, facts: dict[str, Any] | None
+) -> str | None:
+    """Drop remote-sensing-ops advice; fall back to program agronomy."""
+    try:
+        from app.reports.season_growth.facts import looks_like_remote_ops_advice
+    except Exception:
+
+        def looks_like_remote_ops_advice(t: str | None) -> bool:  # type: ignore
+            return False
+
+    raw = (str(text).strip() if text is not None else "")
+    if not raw or looks_like_remote_ops_advice(raw):
+        return _program_next_season_from_facts(facts)
+    # Also reject if any line is remote-ops (mixed cards).
+    for ln in raw.splitlines():
+        if looks_like_remote_ops_advice(ln):
+            return _program_next_season_from_facts(facts)
+    return raw
+
 def _empty_ai_fields() -> dict[str, Any]:
     return {
         "core_conclusion": None,
@@ -225,6 +271,12 @@ def missing_llm_sections() -> dict[str, Any]:
             "core_conclusion": "遥感事实已生成（AI 解读未启用）",
             "synthesis": note,
             "actions_now": "请配置 BAILIAN_API_KEY 后重新生成以获得 AI 解读与建议。",
+            "actions_week": "未来7天结合田间墒情与植株状态安排农事，不宜仅凭遥感定夺。",
+            "actions_next_season": (
+                "基于本季遥感干旱/水分格局，下一季宜提前准备灌溉与排水能力，"
+                "并在拔节–抽雄、灌浆等关键阶段安排墒情检查；记录播种日期、品种与产量以便解读"
+                "（需结合当地确认）。"
+            ),
             "one_liner": "遥感事实已生成（AI 解读未启用）",
             "summary": note,
             "interpretation": note,
@@ -249,7 +301,11 @@ def generate_season_narrative(
     """
     cfg = bailian_settings()
     if not cfg["api_key"]:
-        return missing_llm_sections()
+        out = missing_llm_sections()
+        out["actions_next_season"] = _sanitize_next_season(
+            out.get("actions_next_season"), facts
+        )
+        return out
 
     user_payload = {
         "facts": facts,
@@ -286,6 +342,9 @@ def generate_season_narrative(
         )
         parsed = _extract_json(content)
         out = _normalize_ai(parsed)
+        out["actions_next_season"] = _sanitize_next_season(
+            out.get("actions_next_season"), facts
+        )
         if not out.get("core_conclusion") and not out.get("synthesis"):
             out["error"] = out.get("error") or "unparseable_response"
             out["raw_excerpt"] = str(content)[:500]
@@ -302,6 +361,7 @@ def generate_season_narrative(
             {
                 "core_conclusion": "遥感事实已生成（AI 调用失败）",
                 "synthesis": note,
+                "actions_next_season": _program_next_season_from_facts(facts),
                 "one_liner": "遥感事实已生成（AI 调用失败）",
                 "summary": note,
                 "interpretation": note,

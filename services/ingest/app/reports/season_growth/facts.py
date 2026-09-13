@@ -3,6 +3,7 @@
 
 from __future__ import annotations
 
+import re
 import uuid
 from collections import Counter
 from datetime import date, datetime, timedelta
@@ -1679,3 +1680,270 @@ def facts_for_llm(
             "ban": ["生物量积累达标", "生物量达标", "立即收割", "生育进程提前一个月"],
         },
     }
+
+
+# ── Agronomy helpers for next-season / farming-risk pages ─────────────
+
+_REMOTE_OPS_RE = re.compile(
+    r"无人机|多源卫星|补测频次|采样密度|采样点|"
+    r"遥感估产|增加.{0,8}卫星|云量影响|云量.{0,12}补|"
+    r"遥感监测频次|雷达补测|多源遥感|卫星或无人机|"
+    r"提升遥感|遥感数据受云"
+)
+
+
+def _flood_status_cn(status: Any) -> str:
+    return {
+        "ok": "正常监测",
+        "no_s1_data": "无S1数据",
+        "not_applicable": "不适用",
+    }.get(str(status or ""), str(status or "—") or "—")
+
+
+def looks_like_remote_ops_advice(text: str | None) -> bool:
+    """True when advice pushes remote-sensing ops instead of field agronomy."""
+    if not text:
+        return False
+    return bool(_REMOTE_OPS_RE.search(str(text)))
+
+
+def _midlate_drought_days(days: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    out: list[dict[str, Any]] = []
+    for d in days or []:
+        ds = str(d.get("date") or "")
+        if len(ds) >= 7 and ds[5:7] in ("07", "08", "09"):
+            out.append(d)
+    return out
+
+
+def program_next_season_actions(
+    *,
+    drought: dict[str, Any] | None,
+    flood: dict[str, Any] | None,
+    harvest: dict[str, Any] | None = None,
+) -> str:
+    """Practical agronomy advice grounded in THIS season's program facts.
+
+    Never suggests drones / multi-satellite / cloud-cover ops.
+    """
+    drought = drought or {}
+    flood = flood or {}
+    counts = drought.get("counts") or {}
+    severe = int(counts.get("severe") or 0)
+    moderate = int(counts.get("moderate") or 0)
+    mild = int(counts.get("mild") or 0)
+    drought_n = int(drought.get("drought_scene_count") or 0)
+    if drought_n <= 0:
+        drought_n = severe + moderate + mild
+    days = list(drought.get("days") or [])
+    midlate = _midlate_drought_days(days)
+    severe_days = [d for d in days if d.get("class") == "severe"]
+
+    flood_counts = flood.get("counts") or {}
+    watch = int(flood_counts.get("watch") or 0)
+    flood_n = int(flood.get("flood_scene_count") or 0)
+    if flood_n <= 0:
+        flood_n = int(flood_counts.get("flood_moderate") or 0) + int(
+            flood_counts.get("flood_severe") or 0
+        )
+
+    caveat = "（基于本季遥感格局提示，需结合当地气象与田间确认）"
+    lines: list[str] = []
+
+    if drought_n > 0 or midlate:
+        stage_hint = "拔节–抽雄、灌浆"
+        if severe >= 3 or len(severe_days) >= 3 or len(midlate) >= 3:
+            lines.append(
+                f"本季中后期多次出现干旱/偏干信号（程序干旱景约{drought_n}），"
+                f"下一季宜在{stage_hint}等关键阶段提前安排墒情检查与灌溉准备{caveat}。"
+            )
+        else:
+            lines.append(
+                f"本季有干旱提示（程序干旱景约{drought_n}），"
+                f"下一季建议在{stage_hint}等关键阶段抽查墒情并预留灌溉能力{caveat}。"
+            )
+        lines.append("提前检修灌溉设施，预留应对伏旱/秋旱的供水能力。")
+    else:
+        lines.append(
+            f"本季干旱信号不突出，仍建议下一季保留基本灌溉应急能力，"
+            f"并在关键生育阶段抽查墒情{caveat}。"
+        )
+
+    if flood_n > 0 or watch > 0:
+        lines.append(
+            f"本季雷达曾出现关注/积水相关信号（关注{watch}、洪涝景{flood_n}），"
+            f"下一季注意疏通沟渠、降低渍涝风险{caveat}。"
+        )
+    else:
+        lines.append("本季未检出明显洪涝，雨季仍建议维护排水沟，避免局部积水。")
+
+    lines.append(
+        "记录实测播种日期、品种与产量，便于校准物候估计与解读下一季长势曲线。"
+    )
+    if harvest and harvest.get("status") == "detected":
+        lines.append(
+            "本季出现收获相关遥感信号，下一季可结合田间成熟观察记录，"
+            "对照籽粒含水与收获窗口（仍须田间确认）。"
+        )
+    # Keep to a few short bullets for the card.
+    return "\n".join(lines[:4])
+
+
+def program_farming_risk_tips(
+    *,
+    drought: dict[str, Any] | None,
+    flood: dict[str, Any] | None,
+    harvest: dict[str, Any] | None = None,
+    ndvi: dict[str, Any] | None = None,
+) -> dict[str, list[str]]:
+    """Program-owned farming risk cues for the dedicated risk page."""
+    drought = drought or {}
+    flood = flood or {}
+    harvest = harvest or {}
+    ndvi = ndvi or {}
+    counts = drought.get("counts") or {}
+    severe = int(counts.get("severe") or 0)
+    moderate = int(counts.get("moderate") or 0)
+    drought_n = int(drought.get("drought_scene_count") or 0) or (
+        severe + moderate + int(counts.get("mild") or 0)
+    )
+    days = list(drought.get("days") or [])
+    midlate = _midlate_drought_days(days)
+    flood_counts = flood.get("counts") or {}
+    watch = int(flood_counts.get("watch") or 0)
+    flood_n = int(flood.get("flood_scene_count") or 0) or (
+        int(flood_counts.get("flood_moderate") or 0)
+        + int(flood_counts.get("flood_severe") or 0)
+    )
+    peak = ndvi.get("peak") or {}
+    latest = ndvi.get("latest") or {}
+
+    drought_tips: list[str] = []
+    if drought_n > 0:
+        dates_preview = "、".join(
+            str(d.get("date")) for d in midlate[:4] if d.get("date")
+        ) or "—"
+        drought_tips.append(
+            f"程序记录干旱/偏干景约{drought_n}（中后期示例日：{dates_preview}）。"
+            "若田间墒情偏低，宜在拔节–抽雄、灌浆等需水关键期安排灌溉或补墒检查。"
+        )
+        if severe > 0:
+            drought_tips.append(
+                f"重度干旱分级共{severe}景：提示天气偏干与成熟脱水可能叠加，"
+                "不能单凭遥感定量灾损，需对照土壤与气象。"
+            )
+    else:
+        drought_tips.append(
+            "本季官方干旱景不明显；仍建议在关键生育阶段抽查墒情，避免突发干热风。"
+        )
+    drought_tips.append("以上为基于本季遥感格局的提示，须结合当地气象与田间确认。")
+
+    rain_tips: list[str] = []
+    if flood_n > 0 or watch > 0:
+        rain_tips.append(
+            f"S1 监测：关注{watch}景、洪涝相关{flood_n}景。"
+            "雨后检查排水沟与低洼积水，避免渍涝伤根。"
+        )
+    else:
+        rain_tips.append(
+            f"S1 状态：{_flood_status_cn(flood.get('status'))}；"
+            f"{format_flood_counts_inline(flood_counts) or '未见明显积水信号'}。"
+            "雨季仍建议保持沟渠畅通。"
+        )
+    rain_tips.append("雷达信号受轨道与地表结构影响，积水判断需田间复核。")
+
+    harvest_tips: list[str] = []
+    if harvest.get("status") == "detected":
+        conf = _conf_cn(str(harvest.get("confidence") or "low"))
+        harvest_tips.append(
+            f"收获信号日 {harvest.get('harvest_date') or '—'}（程序置信度{conf}）："
+            "疑似进入成熟后期或收获准备阶段，需田间确认籽粒含水与植株状态，"
+            "不得作为立即收割依据。"
+        )
+    else:
+        harvest_tips.append("窗口内未形成稳定收获判定；成熟与收获安排须田间确认。")
+    if peak.get("date") and latest.get("date"):
+        harvest_tips.append(
+            f"NDVI峰值 {peak.get('date')}（{_fmt_idx(peak.get('value'), 4)}）→ "
+            f"最新 {latest.get('date')}（{_fmt_idx(latest.get('value'), 4)}），"
+            "绿度回落可与成熟脱水一致，亦可能叠加天气偏干，不能直接推断产量。"
+        )
+    harvest_tips.append("禁止仅凭低置信度遥感信号安排抢收。")
+
+    return {
+        "drought_irrigation": drought_tips[:4],
+        "rain_drainage": rain_tips[:4],
+        "harvest_maturity": harvest_tips[:4],
+    }
+
+
+def program_key_dates(
+    *,
+    ndvi: dict[str, Any] | None,
+    drought: dict[str, Any] | None,
+    harvest: dict[str, Any] | None = None,
+    max_items: int = 8,
+) -> list[dict[str, str]]:
+    """Compact key-date strip: peak NDVI, severe drought days, harvest signal."""
+    ndvi = ndvi or {}
+    drought = drought or {}
+    harvest = harvest or {}
+    items: list[dict[str, str]] = []
+    peak = ndvi.get("peak") or {}
+    if peak.get("date"):
+        items.append(
+            {
+                "date": str(peak["date"]),
+                "label": "NDVI峰值",
+                "detail": f"{_fmt_idx(peak.get('value'), 4)}",
+            }
+        )
+    severe_days = [
+        d for d in (drought.get("days") or []) if d.get("class") == "severe"
+    ]
+    # Prefer mid-late; cap
+    severe_days = sorted(severe_days, key=lambda x: str(x.get("date") or ""))
+    if len(severe_days) > 3:
+        # first, mid, last
+        severe_pick = [severe_days[0], severe_days[len(severe_days) // 2], severe_days[-1]]
+    else:
+        severe_pick = severe_days
+    for d in severe_pick:
+        if d.get("date"):
+            items.append(
+                {
+                    "date": str(d["date"]),
+                    "label": "重度干旱日",
+                    "detail": "程序干旱分级",
+                }
+            )
+    if not severe_pick:
+        # show a couple of any drought days if present
+        for d in list(drought.get("days") or [])[:2]:
+            if d.get("date"):
+                items.append(
+                    {
+                        "date": str(d["date"]),
+                        "label": f"干旱日（{drought_class_cn(d.get('class'))}）",
+                        "detail": "程序干旱分级",
+                    }
+                )
+    if harvest.get("status") == "detected" and harvest.get("harvest_date"):
+        conf = _conf_cn(str(harvest.get("confidence") or "low"))
+        items.append(
+            {
+                "date": str(harvest["harvest_date"]),
+                "label": "收获信号日",
+                "detail": f"置信度{conf}，需田间确认",
+            }
+        )
+    # de-dupe by date+label, sort
+    seen: set[tuple[str, str]] = set()
+    uniq: list[dict[str, str]] = []
+    for it in sorted(items, key=lambda x: x.get("date") or ""):
+        key = (it.get("date") or "", it.get("label") or "")
+        if key in seen:
+            continue
+        seen.add(key)
+        uniq.append(it)
+    return uniq[:max_items]

@@ -136,7 +136,30 @@ class BailianClientTests(unittest.TestCase):
         self.assertIn("疑似进入成熟后期或收获准备阶段", prompt)
         self.assertIn("core_conclusion", prompt)
         self.assertIn("synthesis", prompt)
+        self.assertIn("无人机", prompt)
+        self.assertIn("拔节", prompt)
+        self.assertIn("actions_next_season", prompt)
 
+
+    def test_sanitize_replaces_remote_ops_next_season(self) -> None:
+        bad = (
+            "本季遥感数据受云量影响较大，下一季可考虑增加多源卫星或无人机补测频次。"
+            + '\n'
+            + "结合本地积温优化播种。"
+        )
+        facts = {
+            "drought": {
+                "drought_scene_count": 5,
+                "counts": {"severe": 3},
+                "days": [{"date": "2026-09-01", "class": "severe"}],
+            },
+            "flood": {"counts": {"watch": 2}, "flood_scene_count": 0},
+        }
+        out = bailian._sanitize_next_season(bad, facts)
+        self.assertNotIn("无人机", out or "")
+        self.assertNotIn("云量", out or "")
+        self.assertNotIn("多源", out or "")
+        self.assertTrue(("灌溉" in (out or "")) or ("墒情" in (out or "")))
 
 if __name__ == "__main__":
     unittest.main()

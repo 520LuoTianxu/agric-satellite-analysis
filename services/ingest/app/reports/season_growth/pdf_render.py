@@ -30,6 +30,9 @@ from app.reports.season_growth.facts import (
     FOOTER_DISCLAIMER,
     drought_class_cn,
     flood_class_cn,
+    program_farming_risk_tips,
+    program_key_dates,
+    program_next_season_actions,
 )
 
 CST = timezone(timedelta(hours=8))
@@ -906,7 +909,11 @@ def _action_cards_row(
         ),
         _panel_card(
             "下一季",
-            next_items or ["下一季请补充播种日期、品种与气象资料，以便校准物候估计。"],
+            next_items
+            or [
+                "基于本季遥感干旱/水分格局，下一季宜准备灌溉与排水能力，"
+                "并在拔节–抽雄、灌浆等关键阶段检查墒情；记录播种日期、品种与产量（需当地确认）。"
+            ],
             header_bg="#d1c4e9",
             body_bg="#ede7f6",
             border="#9575cd",
@@ -1208,7 +1215,8 @@ def render_season_growth_pdf(
         path=charts.get("ndvi_ndmi"),
         width_mm=176,
         height_mm=82,
-        caption="图1  NDVI / NDMI：实线仅连接官方/可靠点；浅灰空心点为不可靠，不参与趋势。色带为物候估计。",
+        caption="图1  NDVI / NDMI 长势与水分：实线仅连接官方/可靠点；浅灰空心点为不可靠，不参与趋势线。"
+        "色带为日历物候估计（非实测播种）。关注峰值前后绿度变化与中后期回落。",
         missing="窗口内无足够 NDVI/NDMI 点，未生成曲线图。",
         styles=styles,
     )
@@ -1217,7 +1225,7 @@ def render_season_growth_pdf(
         path=charts.get("s1_vv"),
         width_mm=176,
         height_mm=64,
-        caption="图2  Sentinel-1 VV（阈值线 -17.0 / -15.0 dB）",
+        caption="图2  Sentinel-1 VV 洪涝监测：阈值线 -17.0 / -15.0 dB；关注超阈轨道日，须田间复核积水。",
         missing="窗口内无 S1 VV 数据，未生成洪涝曲线图。",
         styles=styles,
     )
@@ -1335,6 +1343,62 @@ def render_season_growth_pdf(
                 numeric_cols={1, 2, 3, 4, 5, 6},
             )
         )
+
+    # Drought-day highlight + key dates (program facts)
+    drought_days = list(drought.get("days") or [])
+    story.append(Spacer(1, 2.5 * mm))
+    story.append(Paragraph("【干旱日一览（程序）】", styles["h2"]))
+    if drought_days:
+        drows = [["日期", "干旱等级", "说明"]]
+        for d in drought_days[:16]:
+            cls = d.get("class")
+            drows.append(
+                [
+                    str(d.get("date") or "—"),
+                    str(drought_class_cn(cls)),
+                    "中后期偏干提示，需结合墒情确认"
+                    if str(d.get("date") or "")[5:7] in ("07", "08", "09")
+                    else "程序干旱分级",
+                ]
+            )
+        story.append(
+            _table(drows, col_widths=[36 * mm, 36 * mm, 106 * mm], numeric_cols=set())
+        )
+        if len(drought_days) > 16:
+            story.append(
+                Paragraph(
+                    f"注：共 {len(drought_days)} 个干旱日，表中展示前 16 条。",
+                    styles["small"],
+                )
+            )
+    else:
+        story.append(Paragraph("窗口内无程序干旱日记录。", styles["body"]))
+
+    key_dates = program_key_dates(ndvi=ndvi, drought=drought, harvest=harvest)
+    story.append(Spacer(1, 2 * mm))
+    story.append(Paragraph("【本季关键日期】", styles["h2"]))
+    if key_dates:
+        krows = [["日期", "事件", "详情"]]
+        for kd in key_dates:
+            krows.append(
+                [str(kd.get("date") or "—"), str(kd.get("label") or "—"), str(kd.get("detail") or "—")]
+            )
+        story.append(
+            _table(krows, col_widths=[36 * mm, 46 * mm, 96 * mm], numeric_cols=set())
+        )
+    else:
+        story.append(Paragraph("暂无关键日期可汇总。", styles["small"]))
+
+    # Monthly narrative room (AI bullets already on P3; repeat short notes if present)
+    if monthly_notes:
+        story.append(Spacer(1, 2 * mm))
+        story.append(Paragraph("【按月AI判读（补充）】", styles["h2"]))
+        for i, note in enumerate(monthly_notes[:6]):
+            label = "—"
+            if i < len(timeline):
+                label = str(timeline[i].get("period_label") or timeline[i].get("month") or "—")
+            story.append(Paragraph(f"• {_esc(label)}：{_esc(note)}", styles["bullet"]))
+
     story.append(PageBreak())
 
     # ── P5 analysis + actions (card layout) ──
@@ -1367,9 +1431,11 @@ def render_season_growth_pdf(
         ai.get("actions_week") or "未来7天继续关注官方晴空景与田间脱水情况。",
         max_items=5,
     )
+    next_season_fallback = program_next_season_actions(
+        drought=drought, flood=flood, harvest=harvest
+    )
     next_items = _items_from_value(
-        ai.get("actions_next_season")
-        or "下一季请补充播种日期、品种与气象资料，以便校准物候估计。",
+        ai.get("actions_next_season") or next_season_fallback,
         max_items=5,
     )
     story.append(_action_cards_row(now_items, week_items, next_items, styles))
@@ -1399,8 +1465,53 @@ def render_season_growth_pdf(
     story.append(Paragraph(_esc(disclaimer), styles["footer"]))
     story.append(PageBreak())
 
-    # ── P6+ appendix ──
-    story.append(Paragraph("五、附录", styles["h1"]))
+    # ── Farming risk page ──
+    story.append(Paragraph("五、农事风险与应对提示", styles["h1"]))
+    story.append(
+        Paragraph(
+            "以下提示基于本季程序计算的干旱/水分/收获格局，辅以 AI 短建议；"
+            "不作天气或产量断言，须结合当地确认。",
+            styles["small"],
+        )
+    )
+    risk = program_farming_risk_tips(
+        drought=drought, flood=flood, harvest=harvest, ndvi=ndvi
+    )
+    story.append(Spacer(1, 2 * mm))
+    story.append(Paragraph("【干旱与灌溉提示】", styles["h2"]))
+    _bullets(story, risk.get("drought_irrigation") or ["—"], styles)
+    # AI short tip from actions if agronomic
+    if now_items:
+        story.append(
+            Paragraph(
+                f"AI短提示：{_esc(now_items[0])}",
+                styles["small"],
+            )
+        )
+    story.append(Spacer(1, 2 * mm))
+    story.append(Paragraph("【降雨与排水提示】", styles["h2"]))
+    _bullets(story, risk.get("rain_drainage") or ["—"], styles)
+    if week_items:
+        story.append(
+            Paragraph(
+                f"AI短提示：{_esc(week_items[0])}",
+                styles["small"],
+            )
+        )
+    story.append(Spacer(1, 2 * mm))
+    story.append(Paragraph("【收获与成熟核查】", styles["h2"]))
+    _bullets(story, risk.get("harvest_maturity") or ["—"], styles)
+    story.append(Spacer(1, 3 * mm))
+    story.append(
+        _caution_banner(
+            "农事安排须田间确认；低置信度收获信号不得作为立即收割依据。",
+            styles,
+        )
+    )
+    story.append(PageBreak())
+
+    # ── Appendix ──
+    story.append(Paragraph("六、附录", styles["h1"]))
 
     story.append(Paragraph("附录 A  Sentinel-2 逐景表", styles["h2"]))
     if not s2_appendix:
@@ -1455,7 +1566,7 @@ def render_season_growth_pdf(
                 )
             )
 
-    story.append(Spacer(1, 2.5 * mm))
+    story.append(PageBreak())
     story.append(Paragraph("附录 B  Sentinel-1 逐景表", styles["h2"]))
     if not s1_appendix:
         story.append(Paragraph("无 S1 逐景记录。", styles["body"]))
@@ -1491,7 +1602,7 @@ def render_season_growth_pdf(
         else:
             story.append(Paragraph("注：同日多景已按较低 VV 保留一条。", styles["small"]))
 
-    story.append(Spacer(1, 2.5 * mm))
+    story.append(PageBreak())
     story.append(Paragraph("附录 C  判定方法", styles["h2"]))
     method_rows = [
         ["类别", "说明"],

@@ -85,6 +85,7 @@ import {
     computePixelNdviGradeShares,
     NDVI_DAY_GRADE_RULE_ZH,
 } from "@/components/charts/ndvi-grade-shares-chart";
+import { filterRealisticNdviStats } from "@/lib/ndvi-realistic-filter";
 
 const NdviChart = dynamic(() => import("@/components/charts/ndvi-chart"), {
     ssr: false,
@@ -507,6 +508,8 @@ export default function AgriTimeseriesPanel({
     const [dayGradeByDate, setDayGradeByDate] = useState<Record<string, DayGradeShare>>({});
     const dayGradeByDateRef = useRef(dayGradeByDate);
     dayGradeByDateRef.current = dayGradeByDate;
+    /** Shared with NdviChart + stacked grade shares — hide cloudy/unrealistic dates. */
+    const [onlyRealistic, setOnlyRealistic] = useState(true);
     const gradePrefetchDoneRef = useRef<string | null>(null);
     /** Bumps on every loadHeatmap call; stale async results are ignored. */
     const heatmapLoadGenRef = useRef(0);
@@ -1318,6 +1321,36 @@ export default function AgriTimeseriesPanel({
         return out;
     }, [scenes]);
 
+    /** Same date set as NdviChart when「仅显示有效观测」is on; keep full dayGradeByDate for prefetch. */
+    const realisticStatDates = useMemo(() => {
+        if (!onlyRealistic) return null;
+        const filterOpts =
+            series === "ndvi" || series === "evi" || series === "drought"
+                ? { seasonMonths, peakMonths }
+                : series === "ndmi"
+                  ? { seasonMonths }
+                  : {};
+        return new Set(filterRealisticNdviStats(stats, filterOpts).map((s) => s.date));
+    }, [onlyRealistic, stats, series, seasonMonths, peakMonths]);
+
+    const stackedHistoryByDate = useMemo(() => {
+        if (!realisticStatDates) return dayGradeByDate;
+        const out: Record<string, DayGradeShare> = {};
+        for (const [date, share] of Object.entries(dayGradeByDate)) {
+            if (realisticStatDates.has(date)) out[date] = share;
+        }
+        return out;
+    }, [dayGradeByDate, realisticStatDates]);
+
+    const stackedMeanByDate = useMemo(() => {
+        if (!realisticStatDates) return sceneMeanByDate;
+        const out: Record<string, number | null> = {};
+        for (const [date, mean] of Object.entries(sceneMeanByDate)) {
+            if (realisticStatDates.has(date)) out[date] = mean;
+        }
+        return out;
+    }, [sceneMeanByDate, realisticStatDates]);
+
     // Prefetch up to ~12 recent in-season S2 dates for stacked 图一 (no map publish)
     useEffect(() => {
         if (!landId || !scenes.length) return;
@@ -1734,6 +1767,8 @@ export default function AgriTimeseriesPanel({
                                               ? floodEventMarks
                                               : undefined
                                     }
+                                    onlyRealistic={onlyRealistic}
+                                    onOnlyRealisticChange={setOnlyRealistic}
                                 />
                             ) : (
                                 <p className="text-xs text-muted-foreground py-2">{t("noMeanPoints")}</p>
@@ -1768,8 +1803,8 @@ export default function AgriTimeseriesPanel({
                                     <span className="text-[11px] font-medium text-foreground">多日长势占比趋势</span>
                                     <NdviGradeSharesChart
                                         variant="stacked"
-                                        historyByDate={dayGradeByDate}
-                                        meanByDate={sceneMeanByDate}
+                                        historyByDate={stackedHistoryByDate}
+                                        meanByDate={stackedMeanByDate}
                                         height={250}
                                     />
                                 </div>

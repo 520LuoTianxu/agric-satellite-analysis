@@ -847,7 +847,6 @@ async def harvest_detect_for_land(
         )
 
 
-
 @router.get(
     "/lands/{land_id}/ndvi-day-grade-shares",
     response_model=NdviDayGradeSharesOut,

@@ -47,7 +47,9 @@ def compute_pixel_ndvi_day_grade_shares(
     """
     if not pixels:
         return None
-    any_clear = any(int(p.get("clear") or 0) == 1 for p in pixels if isinstance(p, dict))
+    any_clear = any(
+        int(p.get("clear") or 0) == 1 for p in pixels if isinstance(p, dict)
+    )
     counts: dict[str, int] = {g: 0 for g in NDVI_DAY_GRADE_ORDER}
     total = 0.0
     n = 0

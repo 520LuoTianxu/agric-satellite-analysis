@@ -44,8 +44,9 @@ jobs:
       # PDF 报告测试需要 pypdf 解析结果，并用 poppler 作为兼容性兜底。
       - name: Install PDF system tools
         run: sudo apt-get update && sudo apt-get install -y poppler-utils
-      - name: Install shared task dependencies
-        run: pip install -e packages/openfarm_common numpy pillow httpx reportlab matplotlib pypdf
+      # 测试会导入真实的栅格与空间模型，必须安装 ingest 项目声明的完整依赖。
+      - name: Install ingest dependencies
+        run: pip install -e packages/openfarm_common -e services/ingest
       - name: Unit tests
         run: PYTHONPATH=services/ingest python -m unittest discover -s services/ingest/tests -v
 

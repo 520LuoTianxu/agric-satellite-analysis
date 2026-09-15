@@ -6,7 +6,7 @@ import asyncio
 import unittest
 import uuid
 from typing import Any
-from unittest.mock import AsyncMock, MagicMock, patch
+from unittest.mock import AsyncMock, patch
 
 from app.services import work_items as wi
 

@@ -5,9 +5,8 @@ from __future__ import annotations
 import asyncio
 import unittest
 import uuid
-from datetime import datetime, timedelta, timezone
 from typing import Any
-from unittest.mock import AsyncMock, MagicMock, patch
+from unittest.mock import AsyncMock, patch
 
 from app.services import work_items as wi
 
@@ -88,9 +87,7 @@ class ClaimCompleteTests(unittest.TestCase):
         db.flush = AsyncMock()
 
         out = asyncio.get_event_loop().run_until_complete(
-            wi.complete_work_item(
-                db, item.id, result={"ok": True}, worker_id="w1"
-            )
+            wi.complete_work_item(db, item.id, result={"ok": True}, worker_id="w1")
         )
         self.assertEqual(out.status, "done")
         self.assertEqual(out.result_json, {"ok": True})
@@ -125,9 +122,7 @@ class ClaimCompleteTests(unittest.TestCase):
         db.flush = AsyncMock()
 
         out = asyncio.get_event_loop().run_until_complete(
-            wi.fail_work_item(
-                db, item.id, error="temp", worker_id="w1", retry=True
-            )
+            wi.fail_work_item(db, item.id, error="temp", worker_id="w1", retry=True)
         )
         self.assertEqual(out.status, "pending")
 

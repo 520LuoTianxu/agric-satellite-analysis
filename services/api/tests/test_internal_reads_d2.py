@@ -92,7 +92,6 @@ class ResolveBothIdsTests(unittest.TestCase):
         self.assertEqual(out.land_id, "L1")
 
 
-
 class EnsureAgriLandTagTests(unittest.TestCase):
     def test_replace_and_clear(self) -> None:
         from app.core.agri_tags import ensure_agri_land_tag
